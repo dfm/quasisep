@@ -82,8 +82,8 @@ def test_strict_tri_matmul(matrices):
     np.testing.assert_allclose(mat.to_dense(lower=False), u)
 
     # Check matvec
-    np.testing.assert_allclose(mat.matmul(v), l @ v[:, None])
-    np.testing.assert_allclose(mat.matmul(v, lower=False), u @ v[:, None])
+    np.testing.assert_allclose(mat.matmul(v), l @ v)
+    np.testing.assert_allclose(mat.matmul(v, lower=False), u @ v)
 
     # Check matmat
     np.testing.assert_allclose(mat.matmul(m), l @ m)
@@ -100,8 +100,8 @@ def test_tri_matmul(matrices):
     np.testing.assert_allclose(mat.to_dense(lower=False), dense.T)
 
     # Check matvec
-    np.testing.assert_allclose(mat.matmul(v), dense @ v[:, None])
-    np.testing.assert_allclose(mat.matmul(v, lower=False), dense.T @ v[:, None])
+    np.testing.assert_allclose(mat.matmul(v), dense @ v)
+    np.testing.assert_allclose(mat.matmul(v, lower=False), dense.T @ v)
 
     # Check matmat
     np.testing.assert_allclose(mat.matmul(m), dense @ m)
@@ -127,7 +127,7 @@ def test_square_matmul(symm, matrices):
     np.testing.assert_allclose(np.diag(dense), diag)
 
     # Test matmuls
-    np.testing.assert_allclose(mat.matmul(v), dense @ v[:, None])
+    np.testing.assert_allclose(mat.matmul(v), dense @ v)
     np.testing.assert_allclose(mat.matmul(m), dense @ m)
 
 

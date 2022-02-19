@@ -2,13 +2,28 @@
 
 __all__ = ["StrictTriQSM", "TriQSM", "SquareQSM", "SymmQSM"]
 
-from functools import partial
+from functools import partial, wraps
 from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 
 JAXArray = Any
+
+
+def handle_matvec_shapes(func):
+    @wraps(func)
+    def wrapped(self, x, *args, **kwargs):
+        vector = False
+        if jnp.ndim(x) == 1:
+            vector = True
+            x = x[:, None]
+        result = func(self, x, *args, **kwargs)
+        if vector:
+            return result[:, 0]
+        return result
+
+    return wrapped
 
 
 class StrictTriQSM(NamedTuple):
@@ -20,6 +35,7 @@ class StrictTriQSM(NamedTuple):
         return self.matmul(jnp.eye(len(self.p)), lower=lower)
 
     @partial(jax.jit, static_argnames=["lower"])
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
         if lower:
             f = get_matmul_factor(self.q, self.a, x, False)
@@ -37,21 +53,17 @@ class TriQSM(NamedTuple):
         return self.matmul(jnp.eye(len(self.diag)), lower=lower)
 
     @partial(jax.jit, static_argnames=["lower"])
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
-        if x.ndim == 1:
-            x = x[:, None]
         return self.diag[:, None] * x + self.lower.matmul(x, lower=lower)
 
     @jax.jit
     def inv(self) -> "TriQSM":
-        d = self.diag
         p, q, a = self.lower
-
-        g = 1 / d
+        g = 1 / self.diag
         u = -g[:, None] * p
         v = g[:, None] * q
         b = a - jax.vmap(jnp.outer)(v, p)
-
         return TriQSM(diag=g, lower=StrictTriQSM(p=u, q=v, a=b))
 
 
@@ -64,9 +76,8 @@ class SquareQSM(NamedTuple):
         return self.matmul(jnp.eye(len(self.diag)))
 
     @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
-        if x.ndim == 1:
-            x = x[:, None]
         return (
             self.diag[:, None] * x
             + self.lower.matmul(x, lower=True)
@@ -126,9 +137,8 @@ class SymmQSM(NamedTuple):
         return self.matmul(jnp.eye(len(self.diag)))
 
     @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
-        if x.ndim == 1:
-            x = x[:, None]
         return (
             self.diag[:, None] * x
             + self.lower.matmul(x, lower=True)
