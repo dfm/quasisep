@@ -144,8 +144,23 @@ class SymmQSM(NamedTuple):
         lam, t = jax.lax.scan(backward, init, (ig, p, a, s), reverse=True)[1]
         return SymmQSM(diag=lam, lower=StrictTriQSM(p=t, q=s, a=ell))
 
+    @jax.jit
     def cholesky(self) -> TriQSM:
-        pass
+        d = self.diag
+        p, q, a = self.lower
+
+        def impl(carry, data):
+            fp = carry
+            dk, pk, qk, ak = data
+            ck = jnp.sqrt(dk - pk @ fp @ pk)
+            tmp = fp @ ak.T
+            wk = (qk - pk @ tmp) / ck
+            fk = ak @ tmp + jnp.outer(wk, wk)
+            return fk, (ck, wk)
+
+        init = jnp.zeros_like(jnp.outer(q[0], q[0]))
+        _, (c, w) = jax.lax.scan(impl, init, (d, p, q, a))
+        return TriQSM(diag=c, lower=StrictTriQSM(p=p, q=w, a=a))
 
 
 @partial(jax.jit, static_argnames=["reverse"])

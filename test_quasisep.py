@@ -10,12 +10,17 @@ config.update("jax_enable_x64", True)
 
 
 @pytest.fixture(params=["random", "celerite"])
-def matrices(request):
+def name(request):
+    return request.param
+
+
+@pytest.fixture
+def matrices(name):
     N = 100
     random = np.random.default_rng(1234)
     diag = np.exp(random.normal(size=N))
 
-    if request.param == "random":
+    if name == "random":
         J = 5
         p = random.normal(size=(N, J))
         q = random.normal(size=(N, J))
@@ -24,7 +29,7 @@ def matrices(request):
         u = np.triu(q @ p.T, 1)
         diag += np.sum(p * q, axis=1)
 
-    elif request.param == "celerite":
+    elif name == "celerite":
         t = np.sort(random.uniform(0, 10, N))
 
         a = np.array([1.0, 2.5])
@@ -167,3 +172,13 @@ def test_square_inv(symm, matrices):
     # good enough to check that it produces the correct dense reconstruction.
     mat2 = minv.inv()
     np.testing.assert_allclose(mat2.matmul(np.eye(N)), dense, rtol=1e-4)
+
+
+@pytest.mark.parametrize("name", ["celerite"])
+def test_cholesky(matrices):
+    diag, p, q, a, _, _, l, u = matrices
+    N = len(p)
+    mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    dense = mat.matmul(np.eye(N))
+    chol = mat.cholesky()
+    np.testing.assert_allclose(chol.matmul(np.eye(N)), np.linalg.cholesky(dense))
