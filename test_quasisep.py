@@ -1,10 +1,9 @@
-import pytest
-import numpy as np
 import jax.numpy as jnp
-
-from quasisep import StrictTriQSM, TriQSM, SquareQSM, SymmQSM
-
+import numpy as np
+import pytest
 from jax.config import config
+
+from quasisep import SquareQSM, StrictTriQSM, SymmQSM, TriQSM
 
 config.update("jax_enable_x64", True)
 
@@ -76,12 +75,11 @@ def matrices(name):
 
 def test_strict_tri_matmul(matrices):
     _, p, q, a, v, m, l, u = matrices
-    N = len(p)
     mat = StrictTriQSM(p=p, q=q, a=a)
 
     # Check multiplication into identity / to dense
-    np.testing.assert_allclose(mat.matmul(np.eye(N)), l)
-    np.testing.assert_allclose(mat.matmul(np.eye(N), lower=False), u)
+    np.testing.assert_allclose(mat.to_dense(), l)
+    np.testing.assert_allclose(mat.to_dense(lower=False), u)
 
     # Check matvec
     np.testing.assert_allclose(mat.matmul(v), l @ v[:, None])
@@ -94,13 +92,12 @@ def test_strict_tri_matmul(matrices):
 
 def test_tri_matmul(matrices):
     diag, p, q, a, v, m, l, _ = matrices
-    N = len(p)
     mat = TriQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
     dense = l + np.diag(diag)
 
     # Check multiplication into identity / to dense
-    np.testing.assert_allclose(mat.matmul(np.eye(N)), dense)
-    np.testing.assert_allclose(mat.matmul(np.eye(N), lower=False), dense.T)
+    np.testing.assert_allclose(mat.to_dense(), dense)
+    np.testing.assert_allclose(mat.to_dense(lower=False), dense.T)
 
     # Check matvec
     np.testing.assert_allclose(mat.matmul(v), dense @ v[:, None])
@@ -114,7 +111,6 @@ def test_tri_matmul(matrices):
 @pytest.mark.parametrize("symm", [True, False])
 def test_square_matmul(symm, matrices):
     diag, p, q, a, v, m, l, u = matrices
-    N = len(p)
     if symm:
         mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
     else:
@@ -125,7 +121,7 @@ def test_square_matmul(symm, matrices):
         )
 
     # Create and double check the dense reconstruction
-    dense = mat.matmul(np.eye(N))
+    dense = mat.to_dense()
     np.testing.assert_allclose(np.tril(dense, -1), l)
     np.testing.assert_allclose(np.triu(dense, 1), u)
     np.testing.assert_allclose(np.diag(dense), diag)
@@ -135,10 +131,19 @@ def test_square_matmul(symm, matrices):
     np.testing.assert_allclose(mat.matmul(m), dense @ m)
 
 
+@pytest.mark.parametrize("name", ["celerite"])
+def test_tri_inv(matrices):
+    diag, p, q, a, _, _, _, _ = matrices
+    mat = TriQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    dense = mat.to_dense()
+    minv = mat.inv()
+    np.testing.assert_allclose(minv.to_dense(), jnp.linalg.inv(dense))
+    np.testing.assert_allclose(minv.matmul(dense), np.eye(len(diag)), atol=1e-12)
+
+
 @pytest.mark.parametrize("symm", [True, False])
 def test_square_inv(symm, matrices):
     diag, p, q, a, _, _, l, u = matrices
-    N = len(p)
     if symm:
         mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
     else:
@@ -149,15 +154,15 @@ def test_square_inv(symm, matrices):
         )
 
     # Create and double check the dense reconstruction
-    dense = mat.matmul(np.eye(N))
+    dense = mat.to_dense()
     np.testing.assert_allclose(np.tril(dense, -1), l)
     np.testing.assert_allclose(np.triu(dense, 1), u)
     np.testing.assert_allclose(np.diag(dense), diag)
 
     # Invert the QS matrix
     minv = mat.inv()
-    np.testing.assert_allclose(minv.matmul(np.eye(N)), jnp.linalg.inv(dense), rtol=2e-6)
-    np.testing.assert_allclose(minv.matmul(dense), np.eye(N), atol=1e-12)
+    np.testing.assert_allclose(minv.to_dense(), jnp.linalg.inv(dense), rtol=2e-6)
+    np.testing.assert_allclose(minv.matmul(dense), np.eye(len(diag)), atol=1e-12)
 
     # In this case, we know our matrix to be symmetric - so should its inverse be!
     # This may change in the future as we expand test cases
@@ -171,14 +176,18 @@ def test_square_inv(symm, matrices):
     # enough degrees of freedom that they won't necessarily round trip. It's
     # good enough to check that it produces the correct dense reconstruction.
     mat2 = minv.inv()
-    np.testing.assert_allclose(mat2.matmul(np.eye(N)), dense, rtol=1e-4)
+    np.testing.assert_allclose(mat2.to_dense(), dense, rtol=1e-4)
 
 
 @pytest.mark.parametrize("name", ["celerite"])
 def test_cholesky(matrices):
-    diag, p, q, a, _, _, l, u = matrices
-    N = len(p)
+    diag, p, q, a, _, _, _, _ = matrices
     mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
-    dense = mat.matmul(np.eye(N))
+    dense = mat.to_dense()
     chol = mat.cholesky()
-    np.testing.assert_allclose(chol.matmul(np.eye(N)), np.linalg.cholesky(dense))
+    np.testing.assert_allclose(chol.to_dense(), np.linalg.cholesky(dense))
+
+    mat = mat.inv()
+    dense = mat.to_dense()
+    chol = mat.cholesky()
+    np.testing.assert_allclose(chol.to_dense(), np.linalg.cholesky(dense))

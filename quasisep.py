@@ -2,8 +2,8 @@
 
 __all__ = ["StrictTriQSM", "TriQSM", "SquareQSM", "SymmQSM"]
 
-from typing import Any, NamedTuple
 from functools import partial
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -15,6 +15,9 @@ class StrictTriQSM(NamedTuple):
     p: JAXArray
     q: JAXArray
     a: JAXArray
+
+    def to_dense(self, *, lower: bool = True):
+        return self.matmul(jnp.eye(len(self.p)), lower=lower)
 
     @partial(jax.jit, static_argnames=["lower"])
     def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
@@ -30,17 +33,35 @@ class TriQSM(NamedTuple):
     diag: JAXArray
     lower: StrictTriQSM
 
+    def to_dense(self, *, lower: bool = True):
+        return self.matmul(jnp.eye(len(self.diag)), lower=lower)
+
     @partial(jax.jit, static_argnames=["lower"])
     def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
         if x.ndim == 1:
             x = x[:, None]
         return self.diag[:, None] * x + self.lower.matmul(x, lower=lower)
 
+    @jax.jit
+    def inv(self) -> "TriQSM":
+        d = self.diag
+        p, q, a = self.lower
+
+        g = 1 / d
+        u = -g[:, None] * p
+        v = g[:, None] * q
+        b = a - jax.vmap(jnp.outer)(v, p)
+
+        return TriQSM(diag=g, lower=StrictTriQSM(p=u, q=v, a=b))
+
 
 class SquareQSM(NamedTuple):
     diag: JAXArray
     lower: StrictTriQSM
     upper: StrictTriQSM
+
+    def to_dense(self):
+        return self.matmul(jnp.eye(len(self.diag)))
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
@@ -100,6 +121,9 @@ class SquareQSM(NamedTuple):
 class SymmQSM(NamedTuple):
     diag: JAXArray
     lower: StrictTriQSM
+
+    def to_dense(self):
+        return self.matmul(jnp.eye(len(self.diag)))
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
