@@ -15,6 +15,10 @@ def name(request):
 
 @pytest.fixture
 def matrices(name):
+    return get_matrices(name)
+
+
+def get_matrices(name):
     N = 100
     random = np.random.default_rng(1234)
     diag = np.exp(random.normal(size=N))
@@ -61,9 +65,9 @@ def matrices(name):
         )
         q = np.concatenate((cos, sin), axis=1)
         c = np.append(c, c)
-        dt = np.append(np.diff(t), 0)
+        dt = np.append(0, np.diff(t))
         a = np.stack([np.diag(v) for v in np.exp(-c[None] * dt[:, None])], axis=0)
-        q = np.einsum("nji,ni->nj", a, q)
+        p = np.einsum("ni,nij->nj", p, a)
 
     else:
         assert False
@@ -191,3 +195,24 @@ def test_cholesky(matrices):
     dense = mat.to_dense()
     chol = mat.cholesky()
     np.testing.assert_allclose(chol.to_dense(), np.linalg.cholesky(dense))
+
+
+def test_qsmul():
+    diag, p, q, a, _, _, _, _ = get_matrices("celerite")
+    mat1 = SquareQSM(
+        diag=diag,
+        lower=StrictTriQSM(p=p, q=q, a=a),
+        upper=StrictTriQSM(p=p, q=q, a=a),
+    )
+
+    diag, p, q, a, _, _, _, _ = get_matrices("random")
+    mat2 = SquareQSM(
+        diag=diag,
+        lower=StrictTriQSM(p=p, q=q, a=a),
+        upper=StrictTriQSM(p=p, q=q, a=a),
+    )
+
+    mat = mat1.qsmul(mat2)
+    print(mat.to_dense())
+    print(mat1.to_dense() @ mat2.to_dense())
+    assert 0

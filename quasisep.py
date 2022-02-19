@@ -84,6 +84,77 @@ class SquareQSM(NamedTuple):
             + self.upper.matmul(x, lower=False)
         )
 
+    def qsmul(self, other: "SquareQSM") -> "SquareQSM":
+        d1 = self.diag
+        p1, q1, _ = self.lower
+        g1, h1, _ = self.upper
+
+        d2 = other.diag
+        p2, q2, _ = other.lower
+        g2, h2, _ = other.upper
+
+        def forward(carry, data):
+            phi = carry
+            (d1, (p1, q1, a1), _), (d2, _, (g2, h2, b2)) = data
+            alpha = a1 @ phi @ h2 + q1 * d2
+            theta = p1 @ phi @ b2.T + d1 * g2
+            return a1 @ phi @ b2.T + jnp.outer(q1, g2), (phi, alpha, theta)
+
+        init = jnp.zeros_like(jnp.outer(q1[0], g2[0]))
+        phi, alpha, theta = jax.lax.scan(forward, init, (self, other))[1]
+        s = jnp.concatenate((alpha, q2), axis=-1)
+        v = jnp.concatenate((g1, theta), axis=-1)
+
+        def backward(carry, data):
+            psi = carry
+            (d1, _, (g1, h1, b1)), (d2, (p2, q2, a2), _) = data
+            beta = d1 * p2 + g1 @ psi @ a2
+            gamma = h1 * d2 + b1.T @ psi @ q2.T
+            return b1.T @ psi @ a2 + jnp.outer(h1, p2), (psi, beta, gamma)
+
+        init = jnp.zeros_like(jnp.outer(h1[-1], p2[-1]))
+        psi, beta, gamma = jax.lax.scan(backward, init, (self, other), reverse=True)[1]
+        t = jnp.concatenate((p1, beta), axis=-1)
+        u = jnp.concatenate((gamma, h2), axis=-1)
+
+        def calc(self, other, phi, psi):
+            d1 = self.diag
+            p1, q1, a1 = self.lower
+            g1, h1, b1 = self.upper
+
+            d2 = other.diag
+            p2, q2, a2 = other.lower
+            g2, h2, b2 = other.upper
+
+            lam = p1 @ phi @ h2 + d1 * d2 + g1 @ psi @ q2
+            ell = jnp.concatenate(
+                (
+                    jnp.concatenate((a1, jnp.outer(q1, p2)), axis=-1),
+                    jnp.concatenate(
+                        (jnp.zeros((a2.shape[0], a1.shape[1])), a2), axis=-1
+                    ),
+                ),
+                axis=0,
+            )
+            delta = jnp.concatenate(
+                (
+                    jnp.concatenate((b1, jnp.outer(h1, g2)), axis=-1),
+                    jnp.concatenate(
+                        (jnp.zeros((b2.shape[0], b1.shape[1])), b2), axis=-1
+                    ),
+                ),
+                axis=0,
+            )
+            return lam, ell, delta
+
+        lam, ell, delta = jax.vmap(calc)(self, other, phi, psi)
+
+        return SquareQSM(
+            diag=lam,
+            lower=StrictTriQSM(p=t, q=s, a=ell),
+            upper=StrictTriQSM(p=v, q=u, a=delta),
+        )
+
     @jax.jit
     def inv(self) -> "SquareQSM":
         d = self.diag
