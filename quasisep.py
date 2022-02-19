@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+
+__all__ = ["StrictTriQSM", "TriQSM", "SquareQSM", "SymmQSM"]
+
 from typing import Any, NamedTuple
 from functools import partial
 
@@ -7,11 +11,12 @@ import jax.numpy as jnp
 JAXArray = Any
 
 
-class TriQSM(NamedTuple):
+class StrictTriQSM(NamedTuple):
     p: JAXArray
     q: JAXArray
     a: JAXArray
 
+    @partial(jax.jit, static_argnames=["lower"])
     def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
         if lower:
             f = get_matmul_factor(self.q, self.a, x, False)
@@ -21,11 +26,23 @@ class TriQSM(NamedTuple):
             return jax.vmap(jnp.dot)(self.q, f)
 
 
+class TriQSM(NamedTuple):
+    diag: JAXArray
+    lower: StrictTriQSM
+
+    @partial(jax.jit, static_argnames=["lower"])
+    def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
+        if x.ndim == 1:
+            x = x[:, None]
+        return self.diag[:, None] * x + self.lower.matmul(x, lower=lower)
+
+
 class SquareQSM(NamedTuple):
     diag: JAXArray
-    lower: TriQSM
-    upper: TriQSM
+    lower: StrictTriQSM
+    upper: StrictTriQSM
 
+    @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
         if x.ndim == 1:
             x = x[:, None]
@@ -35,6 +52,7 @@ class SquareQSM(NamedTuple):
             + self.upper.matmul(x, lower=False)
         )
 
+    @jax.jit
     def inv(self) -> "SquareQSM":
         d = self.diag
         p, q, a = self.lower
@@ -72,14 +90,65 @@ class SquareQSM(NamedTuple):
         init = jnp.zeros_like(jnp.outer(h[-1], p[-1]))
         args = (ig, p, a, h, b, s, v)
         lam, t, u = jax.lax.scan(backward, init, args, reverse=True)[1]
-
         return SquareQSM(
             diag=lam,
-            lower=TriQSM(p=t, q=s, a=ell),
-            upper=TriQSM(p=u, q=v, a=del_),
+            lower=StrictTriQSM(p=t, q=s, a=ell),
+            upper=StrictTriQSM(p=u, q=v, a=del_),
         )
 
 
+class SymmQSM(NamedTuple):
+    diag: JAXArray
+    lower: StrictTriQSM
+
+    @jax.jit
+    def matmul(self, x: JAXArray) -> JAXArray:
+        if x.ndim == 1:
+            x = x[:, None]
+        return (
+            self.diag[:, None] * x
+            + self.lower.matmul(x, lower=True)
+            + self.lower.matmul(x, lower=False)
+        )
+
+    @jax.jit
+    def inv(self) -> "SymmQSM":
+        d = self.diag
+        p, q, a = self.lower
+
+        def forward(carry, data):
+            f = carry
+            dk, pk, qk, ak = data
+            fpk = f @ pk
+            left = qk - ak @ fpk
+            igk = 1 / (dk - pk @ fpk)
+            sk = igk * left
+            ellk = ak - jnp.outer(sk, pk)
+            fk = ak @ f @ ak.T + igk * jnp.outer(left, left.T)
+            return fk, (igk, sk, ellk)
+
+        init = jnp.zeros_like(jnp.outer(q[0], q[0]))
+        ig, s, ell = jax.lax.scan(forward, init, (d, p, q, a))[1]
+
+        def backward(carry, data):
+            z = carry
+            igk, pk, ak, sk = data
+            zak = z @ ak
+            skzak = sk @ zak
+            lk = igk + sk @ z @ sk
+            tk = skzak - lk * pk
+            zk = ak.T @ zak - jnp.outer(skzak, pk) - jnp.outer(pk, tk)
+            return zk, (lk, tk)
+
+        init = jnp.zeros_like(jnp.outer(p[-1], p[-1]))
+        lam, t = jax.lax.scan(backward, init, (ig, p, a, s), reverse=True)[1]
+        return SymmQSM(diag=lam, lower=StrictTriQSM(p=t, q=s, a=ell))
+
+    def cholesky(self) -> TriQSM:
+        pass
+
+
+@partial(jax.jit, static_argnames=["reverse"])
 def get_matmul_factor(q: JAXArray, a: JAXArray, x: JAXArray, reverse: bool) -> JAXArray:
     def impl(carry, data, *, transpose: bool):
         fp, qp, ap, xp = carry

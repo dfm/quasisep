@@ -1,9 +1,8 @@
 import pytest
 import numpy as np
-import jax
 import jax.numpy as jnp
 
-from quasisep import TriQSM, SquareQSM
+from quasisep import StrictTriQSM, TriQSM, SquareQSM, SymmQSM
 
 from jax.config import config
 
@@ -70,10 +69,10 @@ def matrices(request):
     return diag, p, q, a, v, m, l, u
 
 
-def test_tri_matmul(matrices):
+def test_strict_tri_matmul(matrices):
     _, p, q, a, v, m, l, u = matrices
     N = len(p)
-    mat = TriQSM(p=p, q=q, a=a)
+    mat = StrictTriQSM(p=p, q=q, a=a)
 
     # Check multiplication into identity / to dense
     np.testing.assert_allclose(mat.matmul(np.eye(N)), l)
@@ -88,10 +87,37 @@ def test_tri_matmul(matrices):
     np.testing.assert_allclose(mat.matmul(m, lower=False), u @ m)
 
 
-def test_square_matmul(matrices):
+def test_tri_matmul(matrices):
+    diag, p, q, a, v, m, l, _ = matrices
+    N = len(p)
+    mat = TriQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    dense = l + np.diag(diag)
+
+    # Check multiplication into identity / to dense
+    np.testing.assert_allclose(mat.matmul(np.eye(N)), dense)
+    np.testing.assert_allclose(mat.matmul(np.eye(N), lower=False), dense.T)
+
+    # Check matvec
+    np.testing.assert_allclose(mat.matmul(v), dense @ v[:, None])
+    np.testing.assert_allclose(mat.matmul(v, lower=False), dense.T @ v[:, None])
+
+    # Check matmat
+    np.testing.assert_allclose(mat.matmul(m), dense @ m)
+    np.testing.assert_allclose(mat.matmul(m, lower=False), dense.T @ m)
+
+
+@pytest.mark.parametrize("symm", [True, False])
+def test_square_matmul(symm, matrices):
     diag, p, q, a, v, m, l, u = matrices
     N = len(p)
-    mat = SquareQSM(diag=diag, lower=TriQSM(p=p, q=q, a=a), upper=TriQSM(p=p, q=q, a=a))
+    if symm:
+        mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    else:
+        mat = SquareQSM(
+            diag=diag,
+            lower=StrictTriQSM(p=p, q=q, a=a),
+            upper=StrictTriQSM(p=p, q=q, a=a),
+        )
 
     # Create and double check the dense reconstruction
     dense = mat.matmul(np.eye(N))
@@ -104,10 +130,18 @@ def test_square_matmul(matrices):
     np.testing.assert_allclose(mat.matmul(m), dense @ m)
 
 
-def test_inv(matrices):
+@pytest.mark.parametrize("symm", [True, False])
+def test_square_inv(symm, matrices):
     diag, p, q, a, _, _, l, u = matrices
     N = len(p)
-    mat = SquareQSM(diag=diag, lower=TriQSM(p=p, q=q, a=a), upper=TriQSM(p=p, q=q, a=a))
+    if symm:
+        mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    else:
+        mat = SquareQSM(
+            diag=diag,
+            lower=StrictTriQSM(p=p, q=q, a=a),
+            upper=StrictTriQSM(p=p, q=q, a=a),
+        )
 
     # Create and double check the dense reconstruction
     dense = mat.matmul(np.eye(N))
@@ -122,9 +156,10 @@ def test_inv(matrices):
 
     # In this case, we know our matrix to be symmetric - so should its inverse be!
     # This may change in the future as we expand test cases
-    np.testing.assert_allclose(minv.lower.p, minv.upper.p)
-    np.testing.assert_allclose(minv.lower.q, minv.upper.q)
-    np.testing.assert_allclose(minv.lower.a, minv.upper.a)
+    if not symm:
+        np.testing.assert_allclose(minv.lower.p, minv.upper.p)
+        np.testing.assert_allclose(minv.lower.q, minv.upper.q)
+        np.testing.assert_allclose(minv.lower.a, minv.upper.a)
 
     # The inverse of the inverse should be itself... don't actually do this!
     # Note: we can't actually directly compare the generators because there's
