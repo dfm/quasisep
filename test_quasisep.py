@@ -3,7 +3,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from quasisep import TriQSM
+from quasisep import TriQSM, SquareQSM
 
 from jax.config import config
 
@@ -14,6 +14,7 @@ config.update("jax_enable_x64", True)
 def matrices(request):
     N = 100
     random = np.random.default_rng(1234)
+    diag = np.exp(random.normal(size=N))
 
     if request.param == "random":
         J = 5
@@ -22,14 +23,15 @@ def matrices(request):
         a = np.repeat(np.eye(J)[None, :, :], N, axis=0)
         l = np.tril(p @ q.T, -1)
         u = np.triu(q @ p.T, 1)
+        diag += np.sum(p * q, axis=1)
 
     elif request.param == "celerite":
         t = np.sort(random.uniform(0, 10, N))
 
-        a = jnp.array([1.0, 2.5])
-        b = jnp.array([0.5, 1.5])
-        c = jnp.array([1.2, 0.5])
-        d = jnp.array([0.5, 0.1])
+        a = np.array([1.0, 2.5])
+        b = np.array([0.5, 1.5])
+        c = np.array([1.2, 0.5])
+        d = np.array([0.5, 0.1])
 
         tau = np.abs(t[:, None] - t[None, :])[:, :, None]
         K = np.sum(
@@ -40,6 +42,8 @@ def matrices(request):
             ),
             axis=-1,
         )
+        K[np.diag_indices_from(K)] += diag
+        diag = np.diag(K)
         l = np.tril(K, -1)
         u = np.triu(K, 1)
 
@@ -63,11 +67,11 @@ def matrices(request):
 
     v = random.normal(size=N)
     m = random.normal(size=(N, 4))
-    return p, q, a, v, m, l, u
+    return diag, p, q, a, v, m, l, u
 
 
 def test_tri_matmul(matrices):
-    p, q, a, v, m, l, u = matrices
+    _, p, q, a, v, m, l, u = matrices
     N = len(p)
     mat = TriQSM(p=p, q=q, a=a)
 
@@ -82,3 +86,49 @@ def test_tri_matmul(matrices):
     # Check matmat
     np.testing.assert_allclose(mat.matmul(m), l @ m)
     np.testing.assert_allclose(mat.matmul(m, lower=False), u @ m)
+
+
+def test_square_matmul(matrices):
+    diag, p, q, a, v, m, l, u = matrices
+    N = len(p)
+    mat = SquareQSM(diag=diag, lower=TriQSM(p=p, q=q, a=a), upper=TriQSM(p=p, q=q, a=a))
+
+    # Create and double check the dense reconstruction
+    dense = mat.matmul(np.eye(N))
+    np.testing.assert_allclose(np.tril(dense, -1), l)
+    np.testing.assert_allclose(np.triu(dense, 1), u)
+    np.testing.assert_allclose(np.diag(dense), diag)
+
+    # Test matmuls
+    np.testing.assert_allclose(mat.matmul(v), dense @ v[:, None])
+    np.testing.assert_allclose(mat.matmul(m), dense @ m)
+
+
+def test_inv(matrices):
+    diag, p, q, a, _, _, l, u = matrices
+    N = len(p)
+    mat = SquareQSM(diag=diag, lower=TriQSM(p=p, q=q, a=a), upper=TriQSM(p=p, q=q, a=a))
+
+    # Create and double check the dense reconstruction
+    dense = mat.matmul(np.eye(N))
+    np.testing.assert_allclose(np.tril(dense, -1), l)
+    np.testing.assert_allclose(np.triu(dense, 1), u)
+    np.testing.assert_allclose(np.diag(dense), diag)
+
+    # Invert the QS matrix
+    minv = mat.inv()
+    np.testing.assert_allclose(minv.matmul(np.eye(N)), jnp.linalg.inv(dense), rtol=2e-6)
+    np.testing.assert_allclose(minv.matmul(dense), np.eye(N), atol=1e-12)
+
+    # In this case, we know our matrix to be symmetric - so should its inverse be!
+    # This may change in the future as we expand test cases
+    np.testing.assert_allclose(minv.lower.p, minv.upper.p)
+    np.testing.assert_allclose(minv.lower.q, minv.upper.q)
+    np.testing.assert_allclose(minv.lower.a, minv.upper.a)
+
+    # The inverse of the inverse should be itself... don't actually do this!
+    # Note: we can't actually directly compare the generators because there's
+    # enough degrees of freedom that they won't necessarily round trip. It's
+    # good enough to check that it produces the correct dense reconstruction.
+    mat2 = minv.inv()
+    np.testing.assert_allclose(mat2.matmul(np.eye(N)), dense, rtol=1e-4)
