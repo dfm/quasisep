@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 
-__all__ = ["StrictTriQSM", "TriQSM", "SquareQSM", "SymmQSM"]
+__all__ = [
+    "StrictLowerTriQSM",
+    "StrictUpperTriQSM",
+    "LowerTriQSM",
+    "UpperTriQSM",
+    "SquareQSM",
+    "SymmQSM",
+]
 
 from functools import partial, wraps
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -11,149 +18,196 @@ import jax.numpy as jnp
 JAXArray = Any
 
 
-def handle_matvec_shapes(func):
-    @wraps(func)
-    def wrapped(self, x, *args, **kwargs):
-        vector = False
-        if jnp.ndim(x) == 1:
-            vector = True
-            x = x[:, None]
-        result = func(self, x, *args, **kwargs)
-        if vector:
-            return result[:, 0]
-        return result
+def qsm(cls):
+    def T(self):
+        return self.transpose()
 
-    return wrapped
+    def to_dense(self) -> JAXArray:
+        return self.matmul(jnp.eye(self.shape[0]))
+
+    def shape(self) -> Tuple[int, int]:
+        n = self.diag.shape[0]
+        return (n, n)
+
+    def handle_matvec_shapes(func):
+        @wraps(func)
+        def wrapped(self, x, *args, **kwargs):
+            vector = False
+            if jnp.ndim(x) == 1:
+                vector = True
+                x = x[:, None]
+            result = func(self, x, *args, **kwargs)
+            if vector:
+                return result[:, 0]
+            return result
+
+        return wrapped
+
+    cls.T = property(T)
+    cls.to_dense = to_dense
+    if not hasattr(cls, "shape"):
+        cls.shape = property(shape)
+    cls.matmul = handle_matvec_shapes(cls.matmul)
+    return cls
 
 
-class StrictTriQSM(NamedTuple):
+@qsm
+class StrictLowerTriQSM(NamedTuple):
     p: JAXArray
     q: JAXArray
     a: JAXArray
 
-    def to_dense(self, *, lower: bool = True):
-        return self.matmul(jnp.eye(len(self.p)), lower=lower)
+    @property
+    def shape(self) -> Tuple[int, int]:
+        n = self.p.shape[0]
+        return (n, n)
 
-    @partial(jax.jit, static_argnames=["lower"])
-    @handle_matvec_shapes
-    def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
-        if lower:
-            f = get_matmul_factor(self.q, self.a, x, False)
-            return jax.vmap(jnp.dot)(self.p, f)
-        else:
-            f = get_matmul_factor(self.p, self.a, x, True)
-            return jax.vmap(jnp.dot)(self.q, f)
-
-
-class TriQSM(NamedTuple):
-    diag: JAXArray
-    lower: StrictTriQSM
-
-    def to_dense(self, *, lower: bool = True):
-        return self.matmul(jnp.eye(len(self.diag)), lower=lower)
-
-    @partial(jax.jit, static_argnames=["lower"])
-    @handle_matvec_shapes
-    def matmul(self, x: JAXArray, *, lower: bool = True) -> JAXArray:
-        return self.diag[:, None] * x + self.lower.matmul(x, lower=lower)
+    def transpose(self) -> "StrictUpperTriQSM":
+        return StrictUpperTriQSM(p=self.p, q=self.q, a=self.a)
 
     @jax.jit
-    def inv(self) -> "TriQSM":
+    def matmul(self, x: JAXArray) -> JAXArray:
+        f = get_matmul_factor(self.q, self.a, x, False)
+        return jax.vmap(jnp.dot)(self.p, f)
+
+
+@qsm
+class StrictUpperTriQSM(NamedTuple):
+    p: JAXArray
+    q: JAXArray
+    a: JAXArray
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        n = self.p.shape[0]
+        return (n, n)
+
+    def transpose(self) -> "StrictLowerTriQSM":
+        return StrictLowerTriQSM(p=self.p, q=self.q, a=self.a)
+
+    @jax.jit
+    def matmul(self, x: JAXArray) -> JAXArray:
+        f = get_matmul_factor(self.p, self.a, x, True)
+        return jax.vmap(jnp.dot)(self.q, f)
+
+
+@qsm
+class LowerTriQSM(NamedTuple):
+    diag: JAXArray
+    lower: StrictLowerTriQSM
+
+    def transpose(self) -> "UpperTriQSM":
+        return UpperTriQSM(diag=self.diag, upper=self.lower.T)
+
+    @jax.jit
+    def matmul(self, x: JAXArray) -> JAXArray:
+        return self.diag[:, None] * x + self.lower.matmul(x)
+
+    @jax.jit
+    def inv(self) -> "LowerTriQSM":
         p, q, a = self.lower
         g = 1 / self.diag
         u = -g[:, None] * p
         v = g[:, None] * q
         b = a - jax.vmap(jnp.outer)(v, p)
-        return TriQSM(diag=g, lower=StrictTriQSM(p=u, q=v, a=b))
+        return LowerTriQSM(diag=g, lower=StrictLowerTriQSM(p=u, q=v, a=b))
 
 
-class SquareQSM(NamedTuple):
+@qsm
+class UpperTriQSM(NamedTuple):
     diag: JAXArray
-    lower: StrictTriQSM
-    upper: StrictTriQSM
+    upper: StrictUpperTriQSM
 
-    def to_dense(self):
-        return self.matmul(jnp.eye(len(self.diag)))
+    def transpose(self) -> "LowerTriQSM":
+        return LowerTriQSM(diag=self.diag, lower=self.upper.T)
 
     @jax.jit
-    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
-        return (
-            self.diag[:, None] * x
-            + self.lower.matmul(x, lower=True)
-            + self.upper.matmul(x, lower=False)
+        return self.diag[:, None] * x + self.upper.matmul(x)
+
+    @jax.jit
+    def inv(self) -> "UpperTriQSM":
+        return self.T.inv().T
+
+
+@qsm
+class SquareQSM(NamedTuple):
+    diag: JAXArray
+    lower: StrictLowerTriQSM
+    upper: StrictUpperTriQSM
+
+    def transpose(self) -> "SquareQSM":
+        return SquareQSM(diag=self.diag, lower=self.upper.T, upper=self.lower.T)
+
+    @jax.jit
+    def matmul(self, x: JAXArray) -> JAXArray:
+        return self.diag[:, None] * x + self.lower.matmul(x) + self.upper.matmul(x)
+
+    @jax.jit
+    def qsmul(self, other: "SquareQSM") -> "SquareQSM":
+        def calc_phi_and_psi(phi, data, *, transpose=False):
+            a, b, q, g = data
+            if transpose:
+                return a.T @ phi @ b + jnp.outer(q, g), phi
+            else:
+                return a @ phi @ b.T + jnp.outer(q, g), phi
+
+        init = jnp.zeros_like(jnp.outer(self.lower.q[0], other.upper.p[0]))
+        args = (self.lower.a, other.upper.a, self.lower.q, other.upper.q)
+        _, phi = jax.lax.scan(calc_phi_and_psi, init, args)
+
+        init = jnp.zeros_like(jnp.outer(self.upper.q[-1], other.lower.p[-1]))
+        args = (self.upper.a, other.lower.a, self.upper.p, other.lower.p)
+        _, psi = jax.lax.scan(
+            partial(calc_phi_and_psi, transpose=True), init, args, reverse=True
         )
 
-    def qsmul(self, other: "SquareQSM") -> "SquareQSM":
-        d1 = self.diag
-        p1, q1, _ = self.lower
-        g1, h1, _ = self.upper
-
-        d2 = other.diag
-        p2, q2, _ = other.lower
-        g2, h2, _ = other.upper
-
-        def forward(carry, data):
-            phi = carry
-            (d1, (p1, q1, a1), _), (d2, _, (g2, h2, b2)) = data
-            alpha = a1 @ phi @ h2 + q1 * d2
-            theta = p1 @ phi @ b2.T + d1 * g2
-            return a1 @ phi @ b2.T + jnp.outer(q1, g2), (phi, alpha, theta)
-
-        init = jnp.zeros_like(jnp.outer(q1[0], g2[0]))
-        phi, alpha, theta = jax.lax.scan(forward, init, (self, other))[1]
-        s = jnp.concatenate((alpha, q2), axis=-1)
-        v = jnp.concatenate((g1, theta), axis=-1)
-
-        def backward(carry, data):
-            psi = carry
-            (d1, _, (g1, h1, b1)), (d2, (p2, q2, a2), _) = data
-            beta = d1 * p2 + g1 @ psi @ a2
-            gamma = h1 * d2 + b1.T @ psi @ q2.T
-            return b1.T @ psi @ a2 + jnp.outer(h1, p2), (psi, beta, gamma)
-
-        init = jnp.zeros_like(jnp.outer(h1[-1], p2[-1]))
-        psi, beta, gamma = jax.lax.scan(backward, init, (self, other), reverse=True)[1]
-        t = jnp.concatenate((p1, beta), axis=-1)
-        u = jnp.concatenate((gamma, h2), axis=-1)
-
-        def calc(self, other, phi, psi):
+        @jax.vmap
+        def impl(self, other, phi, psi):
+            # Note: the order of g and h is flipped vs the paper!
             d1 = self.diag
             p1, q1, a1 = self.lower
-            g1, h1, b1 = self.upper
+            h1, g1, b1 = self.upper
 
             d2 = other.diag
             p2, q2, a2 = other.lower
-            g2, h2, b2 = other.upper
+            h2, g2, b2 = other.upper
 
+            alpha = a1 @ phi @ h2 + q1 * d2
+            theta = p1 @ phi @ b2.T + d1 * g2
+            beta = d1 * p2 + g1 @ psi @ a2
+            eta = h1 * d2 + b1.T @ psi @ q2
+
+            s = jnp.concatenate((alpha, q2))
+            v = jnp.concatenate((g1, theta))
+            t = jnp.concatenate((p1, beta))
+            u = jnp.concatenate((eta, h2))
             lam = p1 @ phi @ h2 + d1 * d2 + g1 @ psi @ q2
             ell = jnp.concatenate(
                 (
                     jnp.concatenate((a1, jnp.outer(q1, p2)), axis=-1),
                     jnp.concatenate(
-                        (jnp.zeros((a2.shape[0], a1.shape[1])), a2), axis=-1
+                        (jnp.zeros((a2.shape[0], a1.shape[0])), a2), axis=-1
                     ),
                 ),
                 axis=0,
             )
             delta = jnp.concatenate(
                 (
-                    jnp.concatenate((b1, jnp.outer(h1, g2)), axis=-1),
                     jnp.concatenate(
-                        (jnp.zeros((b2.shape[0], b1.shape[1])), b2), axis=-1
+                        (b1, jnp.zeros((b1.shape[0], b2.shape[0]))), axis=-1
                     ),
+                    jnp.concatenate((jnp.outer(g2, h1), b2), axis=-1),
                 ),
                 axis=0,
             )
-            return lam, ell, delta
+            return SquareQSM(
+                diag=lam,
+                lower=StrictLowerTriQSM(p=t, q=s, a=ell),
+                upper=StrictUpperTriQSM(p=u, q=v, a=delta),
+            )
 
-        lam, ell, delta = jax.vmap(calc)(self, other, phi, psi)
-
-        return SquareQSM(
-            diag=lam,
-            lower=StrictTriQSM(p=t, q=s, a=ell),
-            upper=StrictTriQSM(p=v, q=u, a=delta),
-        )
+        return impl(self, other, phi, psi)
 
     @jax.jit
     def inv(self) -> "SquareQSM":
@@ -195,26 +249,22 @@ class SquareQSM(NamedTuple):
         lam, t, u = jax.lax.scan(backward, init, args, reverse=True)[1]
         return SquareQSM(
             diag=lam,
-            lower=StrictTriQSM(p=t, q=s, a=ell),
-            upper=StrictTriQSM(p=u, q=v, a=del_),
+            lower=StrictLowerTriQSM(p=t, q=s, a=ell),
+            upper=StrictUpperTriQSM(p=u, q=v, a=del_),
         )
 
 
+@qsm
 class SymmQSM(NamedTuple):
     diag: JAXArray
-    lower: StrictTriQSM
+    lower: StrictLowerTriQSM
 
-    def to_dense(self):
-        return self.matmul(jnp.eye(len(self.diag)))
+    def transpose(self) -> "SymmQSM":
+        return self
 
     @jax.jit
-    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
-        return (
-            self.diag[:, None] * x
-            + self.lower.matmul(x, lower=True)
-            + self.lower.matmul(x, lower=False)
-        )
+        return self.diag[:, None] * x + self.lower.matmul(x) + self.lower.T.matmul(x)
 
     @jax.jit
     def inv(self) -> "SymmQSM":
@@ -247,10 +297,10 @@ class SymmQSM(NamedTuple):
 
         init = jnp.zeros_like(jnp.outer(p[-1], p[-1]))
         lam, t = jax.lax.scan(backward, init, (ig, p, a, s), reverse=True)[1]
-        return SymmQSM(diag=lam, lower=StrictTriQSM(p=t, q=s, a=ell))
+        return SymmQSM(diag=lam, lower=StrictLowerTriQSM(p=t, q=s, a=ell))
 
     @jax.jit
-    def cholesky(self) -> TriQSM:
+    def cholesky(self) -> LowerTriQSM:
         d = self.diag
         p, q, a = self.lower
 
@@ -265,7 +315,7 @@ class SymmQSM(NamedTuple):
 
         init = jnp.zeros_like(jnp.outer(q[0], q[0]))
         _, (c, w) = jax.lax.scan(impl, init, (d, p, q, a))
-        return TriQSM(diag=c, lower=StrictTriQSM(p=p, q=w, a=a))
+        return LowerTriQSM(diag=c, lower=StrictLowerTriQSM(p=p, q=w, a=a))
 
 
 @partial(jax.jit, static_argnames=["reverse"])

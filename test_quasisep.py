@@ -3,7 +3,13 @@ import numpy as np
 import pytest
 from jax.config import config
 
-from quasisep import SquareQSM, StrictTriQSM, SymmQSM, TriQSM
+from quasisep import (
+    SquareQSM,
+    StrictLowerTriQSM,
+    StrictUpperTriQSM,
+    SymmQSM,
+    LowerTriQSM,
+)
 
 config.update("jax_enable_x64", True)
 
@@ -79,49 +85,49 @@ def get_matrices(name):
 
 def test_strict_tri_matmul(matrices):
     _, p, q, a, v, m, l, u = matrices
-    mat = StrictTriQSM(p=p, q=q, a=a)
+    mat = StrictLowerTriQSM(p=p, q=q, a=a)
 
     # Check multiplication into identity / to dense
     np.testing.assert_allclose(mat.to_dense(), l)
-    np.testing.assert_allclose(mat.to_dense(lower=False), u)
+    np.testing.assert_allclose(mat.T.to_dense(), u)
 
     # Check matvec
     np.testing.assert_allclose(mat.matmul(v), l @ v)
-    np.testing.assert_allclose(mat.matmul(v, lower=False), u @ v)
+    np.testing.assert_allclose(mat.T.matmul(v), u @ v)
 
     # Check matmat
     np.testing.assert_allclose(mat.matmul(m), l @ m)
-    np.testing.assert_allclose(mat.matmul(m, lower=False), u @ m)
+    np.testing.assert_allclose(mat.T.matmul(m), u @ m)
 
 
 def test_tri_matmul(matrices):
     diag, p, q, a, v, m, l, _ = matrices
-    mat = TriQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    mat = LowerTriQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
     dense = l + np.diag(diag)
 
     # Check multiplication into identity / to dense
     np.testing.assert_allclose(mat.to_dense(), dense)
-    np.testing.assert_allclose(mat.to_dense(lower=False), dense.T)
+    np.testing.assert_allclose(mat.T.to_dense(), dense.T)
 
     # Check matvec
     np.testing.assert_allclose(mat.matmul(v), dense @ v)
-    np.testing.assert_allclose(mat.matmul(v, lower=False), dense.T @ v)
+    np.testing.assert_allclose(mat.T.matmul(v), dense.T @ v)
 
     # Check matmat
     np.testing.assert_allclose(mat.matmul(m), dense @ m)
-    np.testing.assert_allclose(mat.matmul(m, lower=False), dense.T @ m)
+    np.testing.assert_allclose(mat.T.matmul(m), dense.T @ m)
 
 
 @pytest.mark.parametrize("symm", [True, False])
 def test_square_matmul(symm, matrices):
     diag, p, q, a, v, m, l, u = matrices
     if symm:
-        mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+        mat = SymmQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
     else:
         mat = SquareQSM(
             diag=diag,
-            lower=StrictTriQSM(p=p, q=q, a=a),
-            upper=StrictTriQSM(p=p, q=q, a=a),
+            lower=StrictLowerTriQSM(p=p, q=q, a=a),
+            upper=StrictUpperTriQSM(p=p, q=q, a=a),
         )
 
     # Create and double check the dense reconstruction
@@ -138,7 +144,7 @@ def test_square_matmul(symm, matrices):
 @pytest.mark.parametrize("name", ["celerite"])
 def test_tri_inv(matrices):
     diag, p, q, a, _, _, _, _ = matrices
-    mat = TriQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    mat = LowerTriQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
     dense = mat.to_dense()
     minv = mat.inv()
     np.testing.assert_allclose(minv.to_dense(), jnp.linalg.inv(dense))
@@ -149,12 +155,12 @@ def test_tri_inv(matrices):
 def test_square_inv(symm, matrices):
     diag, p, q, a, _, _, l, u = matrices
     if symm:
-        mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+        mat = SymmQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
     else:
         mat = SquareQSM(
             diag=diag,
-            lower=StrictTriQSM(p=p, q=q, a=a),
-            upper=StrictTriQSM(p=p, q=q, a=a),
+            lower=StrictLowerTriQSM(p=p, q=q, a=a),
+            upper=StrictUpperTriQSM(p=p, q=q, a=a),
         )
 
     # Create and double check the dense reconstruction
@@ -186,7 +192,7 @@ def test_square_inv(symm, matrices):
 @pytest.mark.parametrize("name", ["celerite"])
 def test_cholesky(matrices):
     diag, p, q, a, _, _, _, _ = matrices
-    mat = SymmQSM(diag=diag, lower=StrictTriQSM(p=p, q=q, a=a))
+    mat = SymmQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
     dense = mat.to_dense()
     chol = mat.cholesky()
     np.testing.assert_allclose(chol.to_dense(), np.linalg.cholesky(dense))
@@ -198,21 +204,45 @@ def test_cholesky(matrices):
 
 
 def test_qsmul():
-    diag, p, q, a, _, _, _, _ = get_matrices("celerite")
+    diag1, p1, q1, a1, _, _, _, _ = get_matrices("celerite")
     mat1 = SquareQSM(
-        diag=diag,
-        lower=StrictTriQSM(p=p, q=q, a=a),
-        upper=StrictTriQSM(p=p, q=q, a=a),
+        diag=diag1,
+        lower=StrictLowerTriQSM(p=p1, q=q1, a=a1),
+        upper=StrictUpperTriQSM(p=p1, q=q1, a=a1),
     )
 
-    diag, p, q, a, _, _, _, _ = get_matrices("random")
+    diag2, p2, q2, a2, _, _, _, _ = get_matrices("random")
     mat2 = SquareQSM(
-        diag=diag,
-        lower=StrictTriQSM(p=p, q=q, a=a),
-        upper=StrictTriQSM(p=p, q=q, a=a),
+        diag=diag2,
+        lower=StrictLowerTriQSM(p=p2, q=q2, a=a2),
+        upper=StrictUpperTriQSM(p=p2, q=q2, a=a2),
     )
 
-    mat = mat1.qsmul(mat2)
-    print(mat.to_dense())
-    print(mat1.to_dense() @ mat2.to_dense())
-    assert 0
+    mat3 = SquareQSM(
+        diag=diag1,
+        lower=StrictLowerTriQSM(p=p1, q=q1, a=a1),
+        upper=StrictUpperTriQSM(p=jnp.zeros_like(p2), q=jnp.zeros_like(q2), a=a2),
+    )
+
+    def doit(mat1, mat2):
+        mat = mat1.qsmul(mat2)
+        a = mat.to_dense()
+        b = mat1.to_dense() @ mat2.to_dense()
+        np.testing.assert_allclose(np.diag(a), np.diag(b))
+        np.testing.assert_allclose(np.tril(a, -1), np.tril(b, -1))
+        np.testing.assert_allclose(np.triu(a, 1), np.triu(b, 1))
+
+    doit(mat1, mat1)
+    doit(mat2, mat2)
+    doit(mat1, mat3)
+    doit(mat2, mat3)
+
+    doit(mat1, mat2)
+    doit(mat1.inv(), mat2)
+    doit(mat1, mat2.inv())
+    doit(mat1.inv(), mat2.inv())
+
+    doit(mat2, mat1)
+    doit(mat2.inv(), mat1)
+    doit(mat2, mat1.inv())
+    doit(mat2.inv(), mat1.inv())
