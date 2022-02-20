@@ -113,6 +113,7 @@ class LowerTriQSM(NamedTuple):
         b = a - jax.vmap(jnp.outer)(v, p)
         return LowerTriQSM(diag=g, lower=StrictLowerTriQSM(p=u, q=v, a=b))
 
+    @jax.jit
     @handle_matvec_shapes
     def solve(self, y: JAXArray) -> JAXArray:
         def impl(fn, data):
@@ -141,6 +142,7 @@ class UpperTriQSM(NamedTuple):
     def inv(self) -> "UpperTriQSM":
         return self.T.inv().T
 
+    @jax.jit
     @handle_matvec_shapes
     def solve(self, y: JAXArray) -> JAXArray:
         def impl(fn, data):
