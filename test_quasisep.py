@@ -224,6 +224,12 @@ def test_qsmul():
         upper=StrictUpperTriQSM(p=jnp.zeros_like(p2), q=jnp.zeros_like(q2), a=a2),
     )
 
+    mat4 = SquareQSM(
+        diag=diag1,
+        lower=StrictLowerTriQSM(p=p1, q=q1, a=a1),
+        upper=StrictUpperTriQSM(p=p2, q=q2, a=a2),
+    )
+
     def doit(mat1, mat2):
         mat = mat1.qsmul(mat2)
         a = mat.to_dense()
@@ -236,6 +242,9 @@ def test_qsmul():
     doit(mat2, mat2)
     doit(mat1, mat3)
     doit(mat2, mat3)
+    doit(mat1, mat4)
+    doit(mat2, mat4)
+    doit(mat3, mat4)
 
     doit(mat1, mat2)
     doit(mat1.inv(), mat2)
