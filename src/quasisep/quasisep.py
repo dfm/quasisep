@@ -9,47 +9,15 @@ __all__ = [
     "SymmQSM",
 ]
 
-from functools import partial, wraps
+from functools import partial
 from typing import Any, NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
 
+from quasisep.helpers import handle_matvec_shapes, qsm
+
 JAXArray = Any
-
-
-def handle_matvec_shapes(func):
-    @wraps(func)
-    def wrapped(self, x, *args, **kwargs):
-        vector = False
-        if jnp.ndim(x) == 1:
-            vector = True
-            x = x[:, None]
-        result = func(self, x, *args, **kwargs)
-        if vector:
-            return result[:, 0]
-        return result
-
-    return wrapped
-
-
-def qsm(cls):
-    def T(self):
-        return self.transpose()
-
-    def to_dense(self) -> JAXArray:
-        return self.matmul(jnp.eye(self.shape[0]))
-
-    def shape(self) -> Tuple[int, int]:
-        n = self.diag.shape[0]
-        return (n, n)
-
-    cls.T = property(T)
-    cls.to_dense = to_dense
-    if not hasattr(cls, "shape"):
-        cls.shape = property(shape)
-    cls.matmul = handle_matvec_shapes(cls.matmul)
-    return cls
 
 
 @qsm
@@ -98,7 +66,7 @@ class LowerTriQSM(NamedTuple):
     lower: StrictLowerTriQSM
 
     def transpose(self) -> "UpperTriQSM":
-        return UpperTriQSM(diag=self.diag, upper=self.lower.T)
+        return UpperTriQSM(diag=self.diag, upper=self.lower.transpose())
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
@@ -116,7 +84,7 @@ class LowerTriQSM(NamedTuple):
     @jax.jit
     @handle_matvec_shapes
     def solve(self, y: JAXArray) -> JAXArray:
-        def impl(fn, data):
+        def impl(fn, data):  # type: ignore
             (cn, (pn, wn, an)), yn = data
             xn = (yn - pn @ fn) / cn
             return an @ fn + jnp.outer(wn, xn), xn
@@ -132,7 +100,7 @@ class UpperTriQSM(NamedTuple):
     upper: StrictUpperTriQSM
 
     def transpose(self) -> "LowerTriQSM":
-        return LowerTriQSM(diag=self.diag, lower=self.upper.T)
+        return LowerTriQSM(diag=self.diag, lower=self.upper.transpose())
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
@@ -140,12 +108,12 @@ class UpperTriQSM(NamedTuple):
 
     @jax.jit
     def inv(self) -> "UpperTriQSM":
-        return self.T.inv().T
+        return self.transpose().inv().transpose()
 
     @jax.jit
     @handle_matvec_shapes
     def solve(self, y: JAXArray) -> JAXArray:
-        def impl(fn, data):
+        def impl(fn, data):  # type: ignore
             (cn, (pn, wn, an)), yn = data
             xn = (yn - wn @ fn) / cn
             return an.T @ fn + jnp.outer(pn, xn), xn
@@ -162,33 +130,40 @@ class SquareQSM(NamedTuple):
     upper: StrictUpperTriQSM
 
     def transpose(self) -> "SquareQSM":
-        return SquareQSM(diag=self.diag, lower=self.upper.T, upper=self.lower.T)
+        return SquareQSM(
+            diag=self.diag,
+            lower=self.upper.transpose(),
+            upper=self.lower.transpose(),
+        )
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
-        return self.diag[:, None] * x + self.lower.matmul(x) + self.upper.matmul(x)
+        return (
+            self.diag[:, None] * x
+            + self.lower.matmul(x)
+            + self.upper.matmul(x)
+        )
 
     @jax.jit
     def qsmul(self, other: "SquareQSM") -> "SquareQSM":
-        def calc_phi_and_psi(phi, data, *, transpose=False):
+        def calc_phi(phi, data):  # type: ignore
             a, b, q, g = data
-            if transpose:
-                return a.T @ phi @ b + jnp.outer(q, g), phi
-            else:
-                return a @ phi @ b.T + jnp.outer(q, g), phi
+            return a @ phi @ b.T + jnp.outer(q, g), phi
+
+        def calc_psi(psi, data):  # type: ignore
+            a, b, q, g = data
+            return a.T @ psi @ b + jnp.outer(q, g), psi
 
         init = jnp.zeros_like(jnp.outer(self.lower.q[0], other.upper.p[0]))
         args = (self.lower.a, other.upper.a, self.lower.q, other.upper.q)
-        _, phi = jax.lax.scan(calc_phi_and_psi, init, args)
+        _, phi = jax.lax.scan(calc_phi, init, args)
 
         init = jnp.zeros_like(jnp.outer(self.upper.q[-1], other.lower.p[-1]))
         args = (self.upper.a, other.lower.a, self.upper.p, other.lower.p)
-        _, psi = jax.lax.scan(
-            partial(calc_phi_and_psi, transpose=True), init, args, reverse=True
-        )
+        _, psi = jax.lax.scan(calc_psi, init, args, reverse=True)
 
         @jax.vmap
-        def impl(self, other, phi, psi):
+        def impl(self, other, phi, psi) -> SquareQSM:  # type: ignore
             # Note: the order of g and h is flipped vs the paper!
             d1 = self.diag
             p1, q1, a1 = self.lower
@@ -240,7 +215,7 @@ class SquareQSM(NamedTuple):
         p, q, a = self.lower
         h, g, b = self.upper
 
-        def forward(carry, data):
+        def forward(carry, data):  # type: ignore
             f = carry
             dk, pk, qk, ak, gk, hk, bk = data
             fhk = f @ hk
@@ -256,9 +231,11 @@ class SquareQSM(NamedTuple):
             return fk, (igk, sk, ellk, vk, delk)
 
         init = jnp.zeros_like(jnp.outer(q[0], g[0]))
-        ig, s, ell, v, del_ = jax.lax.scan(forward, init, (d, p, q, a, g, h, b))[1]
+        ig, s, ell, v, del_ = jax.lax.scan(
+            forward, init, (d, p, q, a, g, h, b)
+        )[1]
 
-        def backward(carry, data):
+        def backward(carry, data):  # type: ignore
             z = carry
             igk, pk, ak, hk, bk, sk, vk = data
             zsk = z @ sk
@@ -289,14 +266,18 @@ class SymmQSM(NamedTuple):
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
-        return self.diag[:, None] * x + self.lower.matmul(x) + self.lower.T.matmul(x)
+        return (
+            self.diag[:, None] * x
+            + self.lower.matmul(x)
+            + self.lower.transpose().matmul(x)
+        )
 
     @jax.jit
     def inv(self) -> "SymmQSM":
         d = self.diag
         p, q, a = self.lower
 
-        def forward(carry, data):
+        def forward(carry, data):  # type: ignore
             f = carry
             dk, pk, qk, ak = data
             fpk = f @ pk
@@ -310,7 +291,7 @@ class SymmQSM(NamedTuple):
         init = jnp.zeros_like(jnp.outer(q[0], q[0]))
         ig, s, ell = jax.lax.scan(forward, init, (d, p, q, a))[1]
 
-        def backward(carry, data):
+        def backward(carry, data):  # type: ignore
             z = carry
             igk, pk, ak, sk = data
             zak = z @ ak
@@ -329,7 +310,7 @@ class SymmQSM(NamedTuple):
         d = self.diag
         p, q, a = self.lower
 
-        def impl(carry, data):
+        def impl(carry, data):  # type: ignore
             fp = carry
             dk, pk, qk, ak = data
             ck = jnp.sqrt(dk - pk @ fp @ pk)
@@ -344,8 +325,10 @@ class SymmQSM(NamedTuple):
 
 
 @partial(jax.jit, static_argnames=["reverse"])
-def get_matmul_factor(q: JAXArray, a: JAXArray, x: JAXArray, reverse: bool) -> JAXArray:
-    def impl(carry, data, *, transpose: bool):
+def get_matmul_factor(
+    q: JAXArray, a: JAXArray, x: JAXArray, reverse: bool
+) -> JAXArray:
+    def impl(carry, data, *, transpose: bool):  # type: ignore
         fp, qp, ap, xp = carry
         qn, an, xn = data
         if transpose:
@@ -360,5 +343,7 @@ def get_matmul_factor(q: JAXArray, a: JAXArray, x: JAXArray, reverse: bool) -> J
     f1 = jnp.zeros_like(jnp.outer(q1, x1))
     init = (f1, q1, a1, x1)
     args = (q, a, x)
-    _, f = jax.lax.scan(partial(impl, transpose=reverse), init, args, reverse=reverse)
+    _, f = jax.lax.scan(
+        partial(impl, transpose=reverse), init, args, reverse=reverse
+    )
     return f

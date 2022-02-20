@@ -1,3 +1,6 @@
+# -*- coding: utf-8 -*-
+# mypy: ignore-errors
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -72,7 +75,9 @@ def get_matrices(name):
         q = np.concatenate((cos, sin), axis=1)
         c = np.append(c, c)
         dt = np.append(0, np.diff(t))
-        a = np.stack([np.diag(v) for v in np.exp(-c[None] * dt[:, None])], axis=0)
+        a = np.stack(
+            [np.diag(v) for v in np.exp(-c[None] * dt[:, None])], axis=0
+        )
         p = np.einsum("ni,nij->nj", p, a)
 
     else:
@@ -148,7 +153,9 @@ def test_tri_inv(matrices):
     dense = mat.to_dense()
     minv = mat.inv()
     np.testing.assert_allclose(minv.to_dense(), jnp.linalg.inv(dense))
-    np.testing.assert_allclose(minv.matmul(dense), np.eye(len(diag)), atol=1e-12)
+    np.testing.assert_allclose(
+        minv.matmul(dense), np.eye(len(diag)), atol=1e-12
+    )
 
 
 @pytest.mark.parametrize("name", ["celerite"])
@@ -161,6 +168,11 @@ def test_tri_solve(matrices):
 
     np.testing.assert_allclose(mat.T.solve(v), np.linalg.solve(dense.T, v))
     np.testing.assert_allclose(mat.T.solve(m), np.linalg.solve(dense.T, m))
+
+    np.testing.assert_allclose(mat.inv().solve(v), dense @ v)
+    np.testing.assert_allclose(mat.inv().solve(m), dense @ m)
+    np.testing.assert_allclose(mat.T.inv().solve(v), dense.T @ v)
+    np.testing.assert_allclose(mat.T.inv().solve(m), dense.T @ m)
 
 
 @pytest.mark.parametrize("symm", [True, False])
@@ -183,8 +195,12 @@ def test_square_inv(symm, matrices):
 
     # Invert the QS matrix
     minv = mat.inv()
-    np.testing.assert_allclose(minv.to_dense(), jnp.linalg.inv(dense), rtol=2e-6)
-    np.testing.assert_allclose(minv.matmul(dense), np.eye(len(diag)), atol=1e-12)
+    np.testing.assert_allclose(
+        minv.to_dense(), jnp.linalg.inv(dense), rtol=2e-6
+    )
+    np.testing.assert_allclose(
+        minv.matmul(dense), np.eye(len(diag)), atol=1e-12
+    )
 
     # In this case, we know our matrix to be symmetric - so should its inverse be!
     # This may change in the future as we expand test cases
@@ -214,8 +230,12 @@ def test_cholesky(matrices):
     chol = mat.cholesky()
     np.testing.assert_allclose(chol.to_dense(), np.linalg.cholesky(dense))
 
-    np.testing.assert_allclose(chol.solve(v), np.linalg.solve(chol.to_dense(), v))
-    np.testing.assert_allclose(chol.solve(m), np.linalg.solve(chol.to_dense(), m))
+    np.testing.assert_allclose(
+        chol.solve(v), np.linalg.solve(chol.to_dense(), v)
+    )
+    np.testing.assert_allclose(
+        chol.solve(m), np.linalg.solve(chol.to_dense(), m)
+    )
 
 
 def test_qsmul():
@@ -236,7 +256,9 @@ def test_qsmul():
     mat3 = SquareQSM(
         diag=diag1,
         lower=StrictLowerTriQSM(p=p1, q=q1, a=a1),
-        upper=StrictUpperTriQSM(p=jnp.zeros_like(p2), q=jnp.zeros_like(q2), a=a2),
+        upper=StrictUpperTriQSM(
+            p=jnp.zeros_like(p2), q=jnp.zeros_like(q2), a=a2
+        ),
     )
 
     mat4 = SquareQSM(
