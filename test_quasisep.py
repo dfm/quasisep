@@ -143,12 +143,24 @@ def test_square_matmul(symm, matrices):
 
 @pytest.mark.parametrize("name", ["celerite"])
 def test_tri_inv(matrices):
-    diag, p, q, a, _, _, _, _ = matrices
+    diag, p, q, a, v, m, _, _ = matrices
     mat = LowerTriQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
     dense = mat.to_dense()
     minv = mat.inv()
     np.testing.assert_allclose(minv.to_dense(), jnp.linalg.inv(dense))
     np.testing.assert_allclose(minv.matmul(dense), np.eye(len(diag)), atol=1e-12)
+
+
+@pytest.mark.parametrize("name", ["celerite"])
+def test_tri_solve(matrices):
+    diag, p, q, a, v, m, _, _ = matrices
+    mat = LowerTriQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
+    dense = mat.to_dense()
+    np.testing.assert_allclose(mat.solve(v), np.linalg.solve(dense, v))
+    np.testing.assert_allclose(mat.solve(m), np.linalg.solve(dense, m))
+
+    np.testing.assert_allclose(mat.T.solve(v), np.linalg.solve(dense.T, v))
+    np.testing.assert_allclose(mat.T.solve(m), np.linalg.solve(dense.T, m))
 
 
 @pytest.mark.parametrize("symm", [True, False])
@@ -191,7 +203,7 @@ def test_square_inv(symm, matrices):
 
 @pytest.mark.parametrize("name", ["celerite"])
 def test_cholesky(matrices):
-    diag, p, q, a, _, _, _, _ = matrices
+    diag, p, q, a, v, m, _, _ = matrices
     mat = SymmQSM(diag=diag, lower=StrictLowerTriQSM(p=p, q=q, a=a))
     dense = mat.to_dense()
     chol = mat.cholesky()
@@ -201,6 +213,9 @@ def test_cholesky(matrices):
     dense = mat.to_dense()
     chol = mat.cholesky()
     np.testing.assert_allclose(chol.to_dense(), np.linalg.cholesky(dense))
+
+    np.testing.assert_allclose(chol.solve(v), np.linalg.solve(chol.to_dense(), v))
+    np.testing.assert_allclose(chol.solve(m), np.linalg.solve(chol.to_dense(), m))
 
 
 def test_qsmul():

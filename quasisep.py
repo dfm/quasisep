@@ -18,6 +18,21 @@ import jax.numpy as jnp
 JAXArray = Any
 
 
+def handle_matvec_shapes(func):
+    @wraps(func)
+    def wrapped(self, x, *args, **kwargs):
+        vector = False
+        if jnp.ndim(x) == 1:
+            vector = True
+            x = x[:, None]
+        result = func(self, x, *args, **kwargs)
+        if vector:
+            return result[:, 0]
+        return result
+
+    return wrapped
+
+
 def qsm(cls):
     def T(self):
         return self.transpose()
@@ -28,20 +43,6 @@ def qsm(cls):
     def shape(self) -> Tuple[int, int]:
         n = self.diag.shape[0]
         return (n, n)
-
-    def handle_matvec_shapes(func):
-        @wraps(func)
-        def wrapped(self, x, *args, **kwargs):
-            vector = False
-            if jnp.ndim(x) == 1:
-                vector = True
-                x = x[:, None]
-            result = func(self, x, *args, **kwargs)
-            if vector:
-                return result[:, 0]
-            return result
-
-        return wrapped
 
     cls.T = property(T)
     cls.to_dense = to_dense
@@ -112,6 +113,17 @@ class LowerTriQSM(NamedTuple):
         b = a - jax.vmap(jnp.outer)(v, p)
         return LowerTriQSM(diag=g, lower=StrictLowerTriQSM(p=u, q=v, a=b))
 
+    @handle_matvec_shapes
+    def solve(self, y: JAXArray) -> JAXArray:
+        def impl(fn, data):
+            (cn, (pn, wn, an)), yn = data
+            xn = (yn - pn @ fn) / cn
+            return an @ fn + jnp.outer(wn, xn), xn
+
+        init = jnp.zeros_like(jnp.outer(self.lower.q[0], y[0]))
+        _, x = jax.lax.scan(impl, init, (self, y))
+        return x
+
 
 @qsm
 class UpperTriQSM(NamedTuple):
@@ -128,6 +140,17 @@ class UpperTriQSM(NamedTuple):
     @jax.jit
     def inv(self) -> "UpperTriQSM":
         return self.T.inv().T
+
+    @handle_matvec_shapes
+    def solve(self, y: JAXArray) -> JAXArray:
+        def impl(fn, data):
+            (cn, (pn, wn, an)), yn = data
+            xn = (yn - wn @ fn) / cn
+            return an.T @ fn + jnp.outer(pn, xn), xn
+
+        init = jnp.zeros_like(jnp.outer(self.upper.p[-1], y[-1]))
+        _, x = jax.lax.scan(impl, init, (self, y), reverse=True)
+        return x
 
 
 @qsm
