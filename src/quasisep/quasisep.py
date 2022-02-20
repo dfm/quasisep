@@ -10,14 +10,12 @@ __all__ = [
 ]
 
 from functools import partial
-from typing import Any, NamedTuple, Tuple
+from typing import NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
 
-from quasisep.helpers import handle_matvec_shapes, qsm
-
-JAXArray = Any
+from quasisep.helpers import JAXArray, handle_matvec_shapes, qsm
 
 
 @qsm
@@ -36,7 +34,12 @@ class StrictLowerTriQSM(NamedTuple):
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
-        f = get_matmul_factor(self.q, self.a, x, False)
+        def impl(f, data):  # type: ignore
+            q, a, x = data
+            return a @ f + jnp.outer(q, x), f
+
+        init = jnp.zeros_like(jnp.outer(self.q[0], x[0]))
+        _, f = jax.lax.scan(impl, init, (self.q, self.a, x))
         return jax.vmap(jnp.dot)(self.p, f)
 
 
@@ -56,7 +59,12 @@ class StrictUpperTriQSM(NamedTuple):
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
-        f = get_matmul_factor(self.p, self.a, x, True)
+        def impl(f, data):  # type: ignore
+            p, a, x = data
+            return a.T @ f + jnp.outer(p, x), f
+
+        init = jnp.zeros_like(jnp.outer(self.p[-1], x[-1]))
+        _, f = jax.lax.scan(impl, init, (self.p, self.a, x), reverse=True)
         return jax.vmap(jnp.dot)(self.q, f)
 
 

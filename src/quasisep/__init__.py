@@ -11,12 +11,12 @@ __all__ = [
 ]
 
 from quasisep.quasisep import (
+    LowerTriQSM,
+    SquareQSM,
     StrictLowerTriQSM,
     StrictUpperTriQSM,
-    LowerTriQSM,
-    UpperTriQSM,
-    SquareQSM,
     SymmQSM,
+    UpperTriQSM,
 )
 from quasisep.quasisep_version import version as __version__
 

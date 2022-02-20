@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 # mypy: ignore-errors
 
-__all__ = ["handle_matvec_shapes", "qsm"]
+__all__ = ["handle_matvec_shapes", "qsm", "JAXArray"]
 
 from functools import wraps
-from typing import Tuple
+from typing import Any, Tuple
 
 import jax.numpy as jnp
+
+JAXArray = Any
 
 
 def handle_matvec_shapes(func):

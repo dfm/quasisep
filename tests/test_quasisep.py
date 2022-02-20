@@ -7,11 +7,11 @@ import pytest
 from jax.config import config
 
 from quasisep import (
+    LowerTriQSM,
     SquareQSM,
     StrictLowerTriQSM,
     StrictUpperTriQSM,
     SymmQSM,
-    LowerTriQSM,
 )
 
 config.update("jax_enable_x64", True)
