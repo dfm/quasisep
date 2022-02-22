@@ -9,10 +9,12 @@ __all__ = [
     "SymmQSM",
 ]
 
-from typing import NamedTuple, Tuple
+from typing import Any, NamedTuple, Tuple, Union
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+from jax.scipy.linalg import block_diag
 
 from quasisep.helpers import JAXArray, handle_matvec_shapes, qsm
 
@@ -41,6 +43,57 @@ class StrictLowerTriQSM(NamedTuple):
         _, f = jax.lax.scan(impl, init, (self.q, self.a, x))
         return jax.vmap(jnp.dot)(self.p, f)
 
+    def __matmul__(self, other: Any) -> JAXArray:
+        if hasattr(other, "is_qsm") and other.is_qsm:
+            return NotImplemented
+        return self.matmul(other)
+
+    def __add__(self, other: Any) -> "StrictLowerTriQSM":
+        if not isinstance(other, StrictLowerTriQSM):
+            raise ValueError(
+                "Addition is only implemented for triangular QSMs of the same type"
+            )
+
+        @jax.vmap
+        def impl(
+            self: StrictLowerTriQSM, other: StrictLowerTriQSM
+        ) -> StrictLowerTriQSM:
+            p1, q1, a1 = self
+            p2, q2, a2 = other
+            return StrictLowerTriQSM(
+                p=jnp.concatenate((p1, p2)),
+                q=jnp.concatenate((q1, q2)),
+                a=block_diag(a1, a2),
+            )
+
+        return impl(self, other)
+
+    def __mul__(self, other: Any) -> "StrictLowerTriQSM":
+        if not hasattr(other, "is_qsm"):
+            return StrictLowerTriQSM(p=self.p * other, q=self.q, a=self.a)
+
+        if hasattr(other, "lower"):
+            other = other.lower
+        elif not isinstance(other, StrictLowerTriQSM):
+            raise ValueError(
+                "Multiplication is only implemented for triangular QSMs of the same type"
+            )
+
+        i, j = np.meshgrid(
+            np.arange(self.p.shape[1]), np.arange(other.p.shape[1])
+        )
+        i = i.flatten()
+        j = j.flatten()
+        return StrictLowerTriQSM(
+            p=self.p[:, i] * other.p[:, j],
+            q=self.q[:, i] * other.q[:, j],
+            a=self.a[:, i[:, None], i[None, :]]
+            * other.a[:, j[:, None], j[None, :]],
+        )
+
+    def __neg__(self) -> "StrictLowerTriQSM":
+        return StrictLowerTriQSM(p=-self.p, q=self.q, a=self.a)
+
 
 @qsm
 class StrictUpperTriQSM(NamedTuple):
@@ -65,6 +118,24 @@ class StrictUpperTriQSM(NamedTuple):
         init = jnp.zeros_like(jnp.outer(self.p[-1], x[-1]))
         _, f = jax.lax.scan(impl, init, (self.p, self.a, x), reverse=True)
         return jax.vmap(jnp.dot)(self.q, f)
+
+    def __matmul__(self, other: Any) -> JAXArray:
+        if hasattr(other, "is_qsm"):
+            return NotImplemented
+        return self.matmul(other)
+
+    def __add__(self, other: Any) -> "StrictUpperTriQSM":
+        return (self.transpose() + other.transpose()).transpose()
+
+    def __mul__(self, other: Any) -> "StrictUpperTriQSM":
+        try:
+            other = other.tranpose()
+        except AttributeError:
+            pass
+        return (self.transpose() * other).transpose()
+
+    def __neg__(self) -> "StrictUpperTriQSM":
+        return StrictUpperTriQSM(p=-self.p, q=self.q, a=self.a)
 
 
 @qsm
@@ -147,6 +218,48 @@ class LowerTriQSM(NamedTuple):
 
         return impl(self, other, phi)
 
+    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
+        if isinstance(other, SquareQSM):
+            return self.qsmul(other)
+        elif hasattr(other, "is_qsm") and other.is_qsm:
+            return NotImplemented
+        return self.matmul(other)
+
+    def __add__(self, other: Any) -> Union["LowerTriQSM", "SquareQSM"]:
+        if isinstance(other, LowerTriQSM):
+            return LowerTriQSM(
+                diag=self.diag + other.diag, lower=self.lower + other.lower
+            )
+
+        elif isinstance(other, StrictLowerTriQSM):
+            return LowerTriQSM(diag=self.diag, lower=self.lower + other)
+
+        elif isinstance(other, UpperTriQSM):
+            return SquareQSM(
+                diag=self.diag + other.diag,
+                lower=self.lower,
+                upper=other.upper,
+            )
+
+        elif isinstance(other, StrictUpperTriQSM):
+            return SquareQSM(diag=self.diag, lower=self.lower, upper=other)
+
+        return NotImplemented
+
+    def __mul__(self, other: Any) -> Union["LowerTriQSM", "StrictLowerTriQSM"]:
+        lower = self.lower * other
+
+        if not hasattr(other, "is_qsm"):
+            return LowerTriQSM(diag=self.diag * other, lower=lower)
+
+        if hasattr(other, "diag"):
+            return LowerTriQSM(diag=self.diag * other.diag, lower=lower)
+
+        return lower
+
+    def __neg__(self) -> "LowerTriQSM":
+        return LowerTriQSM(diag=-self.diag, lower=-self.lower)
+
 
 @qsm
 class UpperTriQSM(NamedTuple):
@@ -222,6 +335,26 @@ class UpperTriQSM(NamedTuple):
             )
 
         return impl(self, other, psi)
+
+    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
+        if isinstance(other, SquareQSM):
+            return self.qsmul(other)
+        elif hasattr(other, "is_qsm"):
+            return NotImplemented
+        return self.matmul(other)
+
+    def __add__(self, other: Any) -> Union["UpperTriQSM", "SquareQSM"]:
+        return (self.transpose() + other.transpose()).transpose()
+
+    def __mul__(self, other: Any) -> Union["UpperTriQSM", "StrictUpperTriQSM"]:
+        try:
+            other = other.tranpose()
+        except AttributeError:
+            pass
+        return (self.transpose() * other).transpose()
+
+    def __neg__(self) -> "UpperTriQSM":
+        return UpperTriQSM(diag=-self.diag, upper=-self.upper)
 
 
 @qsm
@@ -400,6 +533,101 @@ class SquareQSM(NamedTuple):
             upper=StrictUpperTriQSM(p=u, q=v, a=del_),
         )
 
+    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
+        if isinstance(other, SquareQSM):
+            return self.qsmul(other)
+        elif hasattr(other, "is_qsm"):
+            return NotImplemented
+        return self.matmul(other)
+
+    def __add__(self, other: Any) -> "SquareQSM":
+        if isinstance(other, UpperTriQSM):
+            return SquareQSM(
+                diag=self.diag + other.diag,
+                lower=self.lower,
+                upper=self.upper + other.upper,
+            )
+
+        elif isinstance(other, StrictUpperTriQSM):
+            return SquareQSM(
+                diag=self.diag, lower=self.lower, upper=self.upper + other
+            )
+
+        elif isinstance(other, LowerTriQSM):
+            return SquareQSM(
+                diag=self.diag + other.diag,
+                lower=self.lower + other.lower,
+                upper=self.upper,
+            )
+
+        elif isinstance(other, StrictLowerTriQSM):
+            return SquareQSM(
+                diag=self.diag, lower=self.lower + other, upper=self.upper
+            )
+
+        elif isinstance(other, SquareQSM):
+            return SquareQSM(
+                diag=self.diag + other.diag,
+                lower=self.lower + other.lower,
+                upper=self.upper + other.upper,
+            )
+
+        return NotImplemented
+
+    def __mul__(
+        self, other: Any
+    ) -> Union[
+        "SquareQSM",
+        "LowerTriQSM",
+        "UpperTriQSM",
+        "StrictLowerTriQSM",
+        "StrictUpperTriQSM",
+    ]:
+        if not hasattr(other, "is_qsm"):
+            return SquareQSM(
+                diag=self.diag * other,
+                lower=self.lower * other,
+                upper=self.upper * other,
+            )
+
+        has_diag = hasattr(other, "diag")
+
+        try:
+            lower = self.lower * other
+        except ValueError:
+            lower = None
+
+        try:
+            upper = self.upper * other
+        except ValueError:
+            upper = None
+
+        if lower is None:
+            assert upper is not None
+            if has_diag:
+                return UpperTriQSM(diag=self.diag * other.diag, upper=upper)
+            else:
+                return upper
+
+        elif upper is None:
+            assert lower is not None
+            if has_diag:
+                return LowerTriQSM(diag=self.diag * other.diag, lower=lower)
+            else:
+                return lower
+
+        else:
+            if has_diag:
+                print(upper)
+                return SquareQSM(
+                    diag=self.diag * other.diag, lower=lower, upper=upper
+                )
+
+        return NotImplemented
+
+    def __neg__(self) -> "SquareQSM":
+        return SquareQSM(diag=-self.diag, lower=-self.lower, upper=-self.upper)
+
 
 @qsm
 class SymmQSM(NamedTuple):
@@ -467,3 +695,50 @@ class SymmQSM(NamedTuple):
         init = jnp.zeros_like(jnp.outer(q[0], q[0]))
         _, (c, w) = jax.lax.scan(impl, init, (d, p, q, a))
         return LowerTriQSM(diag=c, lower=StrictLowerTriQSM(p=p, q=w, a=a))
+
+    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
+        if hasattr(other, "is_qsm") and other.is_qsm:
+            return NotImplemented
+        return self.matmul(other)
+
+    def __add__(self, other: Any) -> Union["SymmQSM", "SquareQSM"]:
+        if isinstance(other, SymmQSM):
+            return SymmQSM(
+                diag=self.diag + other.diag, lower=self.lower + other.lower
+            )
+        return (
+            SquareQSM(
+                diag=self.diag, lower=self.lower, upper=self.lower.transpose()
+            )
+            + other
+        )
+
+    def __mul__(
+        self, other: Any
+    ) -> Union[
+        "SymmQSM",
+        "SquareQSM",
+        "LowerTriQSM",
+        "UpperTriQSM",
+        "StrictLowerTriQSM",
+        "StrictUpperTriQSM",
+    ]:
+        if not hasattr(other, "is_qsm"):
+            return SymmQSM(
+                diag=self.diag * other,
+                lower=self.lower * other,
+            )
+
+        if isinstance(other, SymmQSM):
+            return SymmQSM(
+                diag=self.diag * other.diag, lower=self.lower * other.lower
+            )
+        return (
+            SquareQSM(
+                diag=self.diag, lower=self.lower, upper=self.lower.transpose()
+            )
+            * other
+        )
+
+    def __neg__(self) -> "SymmQSM":
+        return SymmQSM(diag=-self.diag, lower=-self.lower)

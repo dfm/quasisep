@@ -37,9 +37,28 @@ def qsm(cls):
         n = self.diag.shape[0]
         return (n, n)
 
+    def __radd__(self, other):
+        return self.__add__(other)
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __sub__(self, other):
+        return self.__add__(-other)
+
+    def __rsub__(self, other):
+        return (-self).__add__(other)
+
     cls.T = property(T)
     cls.to_dense = to_dense
     if not hasattr(cls, "shape"):
         cls.shape = property(shape)
     cls.matmul = handle_matvec_shapes(cls.matmul)
+    cls.is_qsm = True
+
+    cls.__radd__ = __radd__
+    cls.__rmul__ = __rmul__
+    cls.__sub__ = __sub__
+    cls.__rsub__ = __rsub__
+
     return cls
