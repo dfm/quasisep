@@ -424,28 +424,3 @@ class SymmQSM(NamedTuple):
         init = jnp.zeros_like(jnp.outer(q[0], q[0]))
         _, (c, w) = jax.lax.scan(impl, init, (d, p, q, a))
         return LowerTriQSM(diag=c, lower=StrictLowerTriQSM(p=p, q=w, a=a))
-
-
-@partial(jax.jit, static_argnames=["reverse"])
-def get_matmul_factor(
-    q: JAXArray, a: JAXArray, x: JAXArray, reverse: bool
-) -> JAXArray:
-    def impl(carry, data, *, transpose: bool):  # type: ignore
-        fp, qp, ap, xp = carry
-        qn, an, xn = data
-        if transpose:
-            fn = ap.T @ fp + jnp.outer(qp, xp)
-        else:
-            fn = ap @ fp + jnp.outer(qp, xp)
-        return (fn, qn, an, xn), fn
-
-    q1 = q[0]
-    a1 = a[0]
-    x1 = jnp.zeros_like(x[0])
-    f1 = jnp.zeros_like(jnp.outer(q1, x1))
-    init = (f1, q1, a1, x1)
-    args = (q, a, x)
-    _, f = jax.lax.scan(
-        partial(impl, transpose=reverse), init, args, reverse=reverse
-    )
-    return f
