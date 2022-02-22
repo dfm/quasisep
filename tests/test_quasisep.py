@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # mypy: ignore-errors
 
+from itertools import combinations
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -238,7 +240,49 @@ def test_cholesky(matrices):
     )
 
 
-def test_qsmul():
+def test_tri_qsmul():
+    diag1, p1, q1, a1, _, _, _, _ = get_matrices("celerite")
+    mat1 = LowerTriQSM(
+        diag=diag1,
+        lower=StrictLowerTriQSM(p=p1, q=q1, a=a1),
+    )
+
+    diag2, p2, q2, a2, _, _, _, _ = get_matrices("random")
+    mat2 = SquareQSM(
+        diag=diag2,
+        lower=StrictLowerTriQSM(p=p2, q=q2, a=a2),
+        upper=StrictUpperTriQSM(p=p2, q=q2, a=a2),
+    )
+
+    mat3 = SquareQSM(
+        diag=diag1,
+        lower=StrictLowerTriQSM(p=p1, q=q1, a=a1),
+        upper=StrictUpperTriQSM(
+            p=jnp.zeros_like(p2), q=jnp.zeros_like(q2), a=a2
+        ),
+    )
+
+    mat4 = SquareQSM(
+        diag=diag1,
+        lower=StrictLowerTriQSM(p=p1, q=q1, a=a1),
+        upper=StrictUpperTriQSM(p=p2, q=q2, a=a2),
+    )
+
+    def doit(mat1, mat2):
+        mat = mat1.qsmul(mat2)
+        a = mat.to_dense()
+        b = mat1.to_dense() @ mat2.to_dense()
+        np.testing.assert_allclose(np.diag(a), np.diag(b), atol=1e-12)
+        np.testing.assert_allclose(np.tril(a, -1), np.tril(b, -1), atol=1e-12)
+        np.testing.assert_allclose(np.triu(a, 1), np.triu(b, 1), atol=1e-12)
+
+    minv = mat1.inv()
+    for m in [mat2, mat3, mat4, mat2.inv()]:
+        doit(mat1, m)
+        doit(minv, m)
+
+
+def test_square_qsmul():
     diag1, p1, q1, a1, _, _, _, _ = get_matrices("celerite")
     mat1 = SquareQSM(
         diag=diag1,
@@ -271,24 +315,11 @@ def test_qsmul():
         mat = mat1.qsmul(mat2)
         a = mat.to_dense()
         b = mat1.to_dense() @ mat2.to_dense()
-        np.testing.assert_allclose(np.diag(a), np.diag(b))
-        np.testing.assert_allclose(np.tril(a, -1), np.tril(b, -1))
-        np.testing.assert_allclose(np.triu(a, 1), np.triu(b, 1))
+        np.testing.assert_allclose(np.diag(a), np.diag(b), atol=1e-12)
+        np.testing.assert_allclose(np.tril(a, -1), np.tril(b, -1), atol=1e-12)
+        np.testing.assert_allclose(np.triu(a, 1), np.triu(b, 1), atol=1e-12)
 
-    doit(mat1, mat1)
-    doit(mat2, mat2)
-    doit(mat1, mat3)
-    doit(mat2, mat3)
-    doit(mat1, mat4)
-    doit(mat2, mat4)
-    doit(mat3, mat4)
-
-    doit(mat1, mat2)
-    doit(mat1.inv(), mat2)
-    doit(mat1, mat2.inv())
-    doit(mat1.inv(), mat2.inv())
-
-    doit(mat2, mat1)
-    doit(mat2.inv(), mat1)
-    doit(mat2, mat1.inv())
-    doit(mat2.inv(), mat1.inv())
+    for m1, m2 in combinations(
+        [mat1, mat2, mat3, mat4, mat1.inv(), mat2.inv()], 2
+    ):
+        doit(m1, m2)
