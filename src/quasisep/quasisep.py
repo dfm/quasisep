@@ -177,6 +177,53 @@ class UpperTriQSM(NamedTuple):
         _, x = jax.lax.scan(impl, init, (self, y), reverse=True)
         return x
 
+    @jax.jit
+    def qsmul(self, other: "SquareQSM") -> "SquareQSM":
+        def calc_psi(psi, data):  # type: ignore
+            a, b, q, g = data
+            return a.T @ psi @ b + jnp.outer(q, g), psi
+
+        init = jnp.zeros_like(jnp.outer(self.upper.q[-1], other.lower.p[-1]))
+        args = (self.upper.a, other.lower.a, self.upper.p, other.lower.p)
+        _, psi = jax.lax.scan(calc_psi, init, args, reverse=True)
+
+        @jax.vmap
+        def impl(self, other, psi) -> SquareQSM:  # type: ignore
+            # Note: the order of g and h is flipped vs the paper!
+            d1 = self.diag
+            h1, g1, b1 = self.upper
+
+            d2 = other.diag
+            p2, q2, a2 = other.lower
+            h2, g2, b2 = other.upper
+
+            theta = d1 * g2
+            beta = d1 * p2 + g1 @ psi @ a2
+            eta = h1 * d2 + b1.T @ psi @ q2
+
+            s = q2
+            v = jnp.concatenate((g1, theta))
+            t = beta
+            u = jnp.concatenate((eta, h2))
+            lam = d1 * d2 + g1 @ psi @ q2
+            ell = a2
+            delta = jnp.concatenate(
+                (
+                    jnp.concatenate(
+                        (b1, jnp.zeros((b1.shape[0], b2.shape[0]))), axis=-1
+                    ),
+                    jnp.concatenate((jnp.outer(g2, h1), b2), axis=-1),
+                ),
+                axis=0,
+            )
+            return SquareQSM(
+                diag=lam,
+                lower=StrictLowerTriQSM(p=t, q=s, a=ell),
+                upper=StrictUpperTriQSM(p=u, q=v, a=delta),
+            )
+
+        return impl(self, other, psi)
+
 
 @qsm
 class SquareQSM(NamedTuple):

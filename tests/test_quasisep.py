@@ -277,9 +277,12 @@ def test_tri_qsmul():
         np.testing.assert_allclose(np.triu(a, 1), np.triu(b, 1), atol=1e-12)
 
     minv = mat1.inv()
+    mTinv = mat1.T.inv()
     for m in [mat2, mat3, mat4, mat2.inv()]:
         doit(mat1, m)
         doit(minv, m)
+        doit(mat1.T, m)
+        doit(mTinv, m)
 
 
 def test_square_qsmul():
