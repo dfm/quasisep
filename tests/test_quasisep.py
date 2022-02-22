@@ -219,6 +219,31 @@ def test_square_inv(symm, matrices):
     np.testing.assert_allclose(mat2.to_dense(), dense, rtol=1e-4)
 
 
+def test_gram(matrices):
+    diag, p, q, a, _, _, _, _ = matrices
+    mat = SquareQSM(
+        diag=diag,
+        lower=StrictLowerTriQSM(p=p, q=q, a=a),
+        upper=StrictUpperTriQSM(p=p, q=q, a=a),
+    )
+    dense = mat.to_dense()
+    np.testing.assert_allclose(mat.gram().to_dense(), dense.T @ dense)
+
+    mat = mat.inv()
+    dense = mat.to_dense()
+    np.testing.assert_allclose(mat.gram().to_dense(), dense.T @ dense)
+
+    mat = SquareQSM(
+        diag=diag,
+        lower=StrictLowerTriQSM(p=p, q=q, a=a),
+        upper=StrictUpperTriQSM(
+            p=jnp.zeros_like(p), q=jnp.zeros_like(q), a=jnp.zeros_like(a)
+        ),
+    )
+    dense = mat.to_dense()
+    np.testing.assert_allclose(mat.gram().to_dense(), dense.T @ dense)
+
+
 @pytest.mark.parametrize("name", ["celerite"])
 def test_cholesky(matrices):
     diag, p, q, a, v, m, _, _ = matrices
