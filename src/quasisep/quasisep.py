@@ -9,18 +9,92 @@ __all__ = [
     "SymmQSM",
 ]
 
-from typing import Any, NamedTuple, Tuple, Union
+from abc import ABCMeta, abstractmethod
+from typing import Any, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.linalg import block_diag
 
-from quasisep.helpers import JAXArray, handle_matvec_shapes, qsm
+from quasisep.helpers import JAXArray, dataclass, handle_matvec_shapes
 
 
-@qsm
-class StrictLowerTriQSM(NamedTuple):
+class QSM(metaclass=ABCMeta):
+    def __init__(self, *args, **kwargs) -> None:  # type: ignore
+        # Stub for mypy
+        raise NotImplementedError
+
+    @abstractmethod
+    def transpose(self) -> Any:
+        pass
+
+    @abstractmethod
+    def matmul(self, x: JAXArray) -> JAXArray:
+        pass
+
+    @property
+    def T(self) -> Any:
+        return self.transpose()
+
+    def to_dense(self) -> JAXArray:
+        return self.matmul(jnp.eye(self.shape[0]))
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        n = self.diag.shape[0]  # type: ignore
+        return (n, n)
+
+    def __iter__(self):  # type: ignore
+        return self.iter_elems()  # type: ignore
+
+    def __sub__(self, other: Any) -> Any:
+        return self.__add__(-other)
+
+    def __add__(self, other: Any) -> Any:
+        from quasisep.ops import elementwise_add
+
+        return elementwise_add(self, other)
+
+    def __mul__(self, other: Any) -> Any:
+        from quasisep.ops import elementwise_mul
+
+        return elementwise_mul(self, other)
+
+
+@dataclass
+class DiagQSM(QSM):
+    d: JAXArray
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        n = self.d.shape[0]
+        return (n, n)
+
+    def transpose(self) -> "DiagQSM":
+        return self
+
+    @jax.jit
+    def matmul(self, x: JAXArray) -> JAXArray:
+        return self.d[:, None] * x
+
+    def self_add(self, other: "DiagQSM") -> "DiagQSM":
+        return DiagQSM(d=self.d + other.d)
+
+    def self_mul(self, other: "DiagQSM") -> "DiagQSM":
+        return DiagQSM(d=self.d * other.d)
+
+    def __neg__(self) -> "DiagQSM":
+        return DiagQSM(d=-self.d)
+
+    def __matmul__(self, other: Any) -> JAXArray:
+        if hasattr(other, "is_qsm") and other.is_qsm:
+            return NotImplemented
+        return self.matmul(other)
+
+
+@dataclass
+class StrictLowerTriQSM(QSM):
     p: JAXArray
     q: JAXArray
     a: JAXArray
@@ -43,17 +117,7 @@ class StrictLowerTriQSM(NamedTuple):
         _, f = jax.lax.scan(impl, init, (self.q, self.a, x))
         return jax.vmap(jnp.dot)(self.p, f)
 
-    def __matmul__(self, other: Any) -> JAXArray:
-        if hasattr(other, "is_qsm") and other.is_qsm:
-            return NotImplemented
-        return self.matmul(other)
-
-    def __add__(self, other: Any) -> "StrictLowerTriQSM":
-        if not isinstance(other, StrictLowerTriQSM):
-            raise ValueError(
-                "Addition is only implemented for triangular QSMs of the same type"
-            )
-
+    def self_add(self, other: "StrictLowerTriQSM") -> "StrictLowerTriQSM":
         @jax.vmap
         def impl(
             self: StrictLowerTriQSM, other: StrictLowerTriQSM
@@ -68,17 +132,7 @@ class StrictLowerTriQSM(NamedTuple):
 
         return impl(self, other)
 
-    def __mul__(self, other: Any) -> "StrictLowerTriQSM":
-        if not hasattr(other, "is_qsm"):
-            return StrictLowerTriQSM(p=self.p * other, q=self.q, a=self.a)
-
-        if hasattr(other, "lower"):
-            other = other.lower
-        elif not isinstance(other, StrictLowerTriQSM):
-            raise ValueError(
-                "Multiplication is only implemented for triangular QSMs of the same type"
-            )
-
+    def self_mul(self, other: "StrictLowerTriQSM") -> "StrictLowerTriQSM":
         i, j = np.meshgrid(
             np.arange(self.p.shape[1]), np.arange(other.p.shape[1])
         )
@@ -91,12 +145,17 @@ class StrictLowerTriQSM(NamedTuple):
             * other.a[:, j[:, None], j[None, :]],
         )
 
+    def __matmul__(self, other: Any) -> JAXArray:
+        if hasattr(other, "is_qsm") and other.is_qsm:
+            return NotImplemented
+        return self.matmul(other)
+
     def __neg__(self) -> "StrictLowerTriQSM":
         return StrictLowerTriQSM(p=-self.p, q=self.q, a=self.a)
 
 
-@qsm
-class StrictUpperTriQSM(NamedTuple):
+@dataclass
+class StrictUpperTriQSM(QSM):
     p: JAXArray
     q: JAXArray
     a: JAXArray
@@ -119,6 +178,12 @@ class StrictUpperTriQSM(NamedTuple):
         _, f = jax.lax.scan(impl, init, (self.p, self.a, x), reverse=True)
         return jax.vmap(jnp.dot)(self.q, f)
 
+    def self_add(self, other: "StrictUpperTriQSM") -> "StrictUpperTriQSM":
+        return self.transpose().self_add(other.transpose()).transpose()
+
+    def self_mul(self, other: "StrictUpperTriQSM") -> "StrictUpperTriQSM":
+        return self.transpose().self_mul(other.transpose()).transpose()
+
     def __matmul__(self, other: Any) -> JAXArray:
         if hasattr(other, "is_qsm"):
             return NotImplemented
@@ -138,9 +203,9 @@ class StrictUpperTriQSM(NamedTuple):
         return StrictUpperTriQSM(p=-self.p, q=self.q, a=self.a)
 
 
-@qsm
-class LowerTriQSM(NamedTuple):
-    diag: JAXArray
+@dataclass
+class LowerTriQSM(QSM):
+    diag: DiagQSM
     lower: StrictLowerTriQSM
 
     def transpose(self) -> "UpperTriQSM":
@@ -148,22 +213,25 @@ class LowerTriQSM(NamedTuple):
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
-        return self.diag[:, None] * x + self.lower.matmul(x)
+        return self.diag.matmul(x) + self.lower.matmul(x)
 
     @jax.jit
     def inv(self) -> "LowerTriQSM":
+        (d,) = self.diag
         p, q, a = self.lower
-        g = 1 / self.diag
+        g = 1 / d
         u = -g[:, None] * p
         v = g[:, None] * q
         b = a - jax.vmap(jnp.outer)(v, p)
-        return LowerTriQSM(diag=g, lower=StrictLowerTriQSM(p=u, q=v, a=b))
+        return LowerTriQSM(
+            diag=DiagQSM(g), lower=StrictLowerTriQSM(p=u, q=v, a=b)
+        )
 
     @jax.jit
     @handle_matvec_shapes
     def solve(self, y: JAXArray) -> JAXArray:
         def impl(fn, data):  # type: ignore
-            (cn, (pn, wn, an)), yn = data
+            ((cn,), (pn, wn, an)), yn = data
             xn = (yn - pn @ fn) / cn
             return an @ fn + jnp.outer(wn, xn), xn
 
@@ -184,10 +252,10 @@ class LowerTriQSM(NamedTuple):
         @jax.vmap
         def impl(self, other, phi) -> SquareQSM:  # type: ignore
             # Note: the order of g and h is flipped vs the paper!
-            d1 = self.diag
+            (d1,) = self.diag
             p1, q1, a1 = self.lower
 
-            d2 = other.diag
+            (d2,) = other.diag
             p2, q2, a2 = other.lower
             h2, g2, b2 = other.upper
 
@@ -211,7 +279,7 @@ class LowerTriQSM(NamedTuple):
             )
             delta = b2
             return SquareQSM(
-                diag=lam,
+                diag=DiagQSM(d=lam),
                 lower=StrictLowerTriQSM(p=t, q=s, a=ell),
                 upper=StrictUpperTriQSM(p=u, q=v, a=delta),
             )
@@ -225,45 +293,13 @@ class LowerTriQSM(NamedTuple):
             return NotImplemented
         return self.matmul(other)
 
-    def __add__(self, other: Any) -> Union["LowerTriQSM", "SquareQSM"]:
-        if isinstance(other, LowerTriQSM):
-            return LowerTriQSM(
-                diag=self.diag + other.diag, lower=self.lower + other.lower
-            )
-
-        elif isinstance(other, StrictLowerTriQSM):
-            return LowerTriQSM(diag=self.diag, lower=self.lower + other)
-
-        elif isinstance(other, UpperTriQSM):
-            return SquareQSM(
-                diag=self.diag + other.diag,
-                lower=self.lower,
-                upper=other.upper,
-            )
-
-        elif isinstance(other, StrictUpperTriQSM):
-            return SquareQSM(diag=self.diag, lower=self.lower, upper=other)
-
-        return NotImplemented
-
-    def __mul__(self, other: Any) -> Union["LowerTriQSM", "StrictLowerTriQSM"]:
-        lower = self.lower * other
-
-        if not hasattr(other, "is_qsm"):
-            return LowerTriQSM(diag=self.diag * other, lower=lower)
-
-        if hasattr(other, "diag"):
-            return LowerTriQSM(diag=self.diag * other.diag, lower=lower)
-
-        return lower
-
     def __neg__(self) -> "LowerTriQSM":
         return LowerTriQSM(diag=-self.diag, lower=-self.lower)
 
 
-@qsm
-class UpperTriQSM(NamedTuple):
-    diag: JAXArray
+@dataclass
+class UpperTriQSM(QSM):
+    diag: DiagQSM
     upper: StrictUpperTriQSM
 
     def transpose(self) -> "LowerTriQSM":
@@ -271,7 +307,7 @@ class UpperTriQSM(NamedTuple):
 
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
-        return self.diag[:, None] * x + self.upper.matmul(x)
+        return self.diag.matmul(x) + self.upper.matmul(x)
 
     @jax.jit
     def inv(self) -> "UpperTriQSM":
@@ -281,7 +317,7 @@ class UpperTriQSM(NamedTuple):
     @handle_matvec_shapes
     def solve(self, y: JAXArray) -> JAXArray:
         def impl(fn, data):  # type: ignore
-            (cn, (pn, wn, an)), yn = data
+            ((cn,), (pn, wn, an)), yn = data
             xn = (yn - wn @ fn) / cn
             return an.T @ fn + jnp.outer(pn, xn), xn
 
@@ -302,10 +338,10 @@ class UpperTriQSM(NamedTuple):
         @jax.vmap
         def impl(self, other, psi) -> SquareQSM:  # type: ignore
             # Note: the order of g and h is flipped vs the paper!
-            d1 = self.diag
+            (d1,) = self.diag
             h1, g1, b1 = self.upper
 
-            d2 = other.diag
+            (d2,) = other.diag
             p2, q2, a2 = other.lower
             h2, g2, b2 = other.upper
 
@@ -329,7 +365,7 @@ class UpperTriQSM(NamedTuple):
                 axis=0,
             )
             return SquareQSM(
-                diag=lam,
+                diag=DiagQSM(d=lam),
                 lower=StrictLowerTriQSM(p=t, q=s, a=ell),
                 upper=StrictUpperTriQSM(p=u, q=v, a=delta),
             )
@@ -343,23 +379,13 @@ class UpperTriQSM(NamedTuple):
             return NotImplemented
         return self.matmul(other)
 
-    def __add__(self, other: Any) -> Union["UpperTriQSM", "SquareQSM"]:
-        return (self.transpose() + other.transpose()).transpose()
-
-    def __mul__(self, other: Any) -> Union["UpperTriQSM", "StrictUpperTriQSM"]:
-        try:
-            other = other.tranpose()
-        except AttributeError:
-            pass
-        return (self.transpose() * other).transpose()
-
     def __neg__(self) -> "UpperTriQSM":
         return UpperTriQSM(diag=-self.diag, upper=-self.upper)
 
 
-@qsm
-class SquareQSM(NamedTuple):
-    diag: JAXArray
+@dataclass
+class SquareQSM(QSM):
+    diag: DiagQSM
     lower: StrictLowerTriQSM
     upper: StrictUpperTriQSM
 
@@ -373,9 +399,7 @@ class SquareQSM(NamedTuple):
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
         return (
-            self.diag[:, None] * x
-            + self.lower.matmul(x)
-            + self.upper.matmul(x)
+            self.diag.matmul(x) + self.lower.matmul(x) + self.upper.matmul(x)
         )
 
     @jax.jit
@@ -399,11 +423,11 @@ class SquareQSM(NamedTuple):
         @jax.vmap
         def impl(self, other, phi, psi) -> SquareQSM:  # type: ignore
             # Note: the order of g and h is flipped vs the paper!
-            d1 = self.diag
+            (d1,) = self.diag
             p1, q1, a1 = self.lower
             h1, g1, b1 = self.upper
 
-            d2 = other.diag
+            (d2,) = other.diag
             p2, q2, a2 = other.lower
             h2, g2, b2 = other.upper
 
@@ -436,7 +460,7 @@ class SquareQSM(NamedTuple):
                 axis=0,
             )
             return SquareQSM(
-                diag=lam,
+                diag=DiagQSM(lam),
                 lower=StrictLowerTriQSM(p=t, q=s, a=ell),
                 upper=StrictUpperTriQSM(p=u, q=v, a=delta),
             )
@@ -464,7 +488,7 @@ class SquareQSM(NamedTuple):
         @jax.vmap
         def impl(self, phi, psi) -> SymmQSM:  # type: ignore
             # Note: the order of g and h is flipped vs the paper!
-            d = self.diag
+            (d,) = self.diag
             p, q, a = self.lower
             h, g, b = self.upper
 
@@ -483,13 +507,15 @@ class SquareQSM(NamedTuple):
                 ),
                 axis=0,
             )
-            return SymmQSM(diag=lam, lower=StrictLowerTriQSM(p=t, q=s, a=ell))
+            return SymmQSM(
+                diag=DiagQSM(d=lam), lower=StrictLowerTriQSM(p=t, q=s, a=ell)
+            )
 
         return impl(self, phi, psi)
 
     @jax.jit
     def inv(self) -> "SquareQSM":
-        d = self.diag
+        (d,) = self.diag
         p, q, a = self.lower
         h, g, b = self.upper
 
@@ -528,7 +554,7 @@ class SquareQSM(NamedTuple):
         args = (ig, p, a, h, b, s, v)
         lam, t, u = jax.lax.scan(backward, init, args, reverse=True)[1]
         return SquareQSM(
-            diag=lam,
+            diag=DiagQSM(d=lam),
             lower=StrictLowerTriQSM(p=t, q=s, a=ell),
             upper=StrictUpperTriQSM(p=u, q=v, a=del_),
         )
@@ -540,98 +566,13 @@ class SquareQSM(NamedTuple):
             return NotImplemented
         return self.matmul(other)
 
-    def __add__(self, other: Any) -> "SquareQSM":
-        if isinstance(other, UpperTriQSM):
-            return SquareQSM(
-                diag=self.diag + other.diag,
-                lower=self.lower,
-                upper=self.upper + other.upper,
-            )
-
-        elif isinstance(other, StrictUpperTriQSM):
-            return SquareQSM(
-                diag=self.diag, lower=self.lower, upper=self.upper + other
-            )
-
-        elif isinstance(other, LowerTriQSM):
-            return SquareQSM(
-                diag=self.diag + other.diag,
-                lower=self.lower + other.lower,
-                upper=self.upper,
-            )
-
-        elif isinstance(other, StrictLowerTriQSM):
-            return SquareQSM(
-                diag=self.diag, lower=self.lower + other, upper=self.upper
-            )
-
-        elif isinstance(other, SquareQSM):
-            return SquareQSM(
-                diag=self.diag + other.diag,
-                lower=self.lower + other.lower,
-                upper=self.upper + other.upper,
-            )
-
-        return NotImplemented
-
-    def __mul__(
-        self, other: Any
-    ) -> Union[
-        "SquareQSM",
-        "LowerTriQSM",
-        "UpperTriQSM",
-        "StrictLowerTriQSM",
-        "StrictUpperTriQSM",
-    ]:
-        if not hasattr(other, "is_qsm"):
-            return SquareQSM(
-                diag=self.diag * other,
-                lower=self.lower * other,
-                upper=self.upper * other,
-            )
-
-        has_diag = hasattr(other, "diag")
-
-        try:
-            lower = self.lower * other
-        except ValueError:
-            lower = None
-
-        try:
-            upper = self.upper * other
-        except ValueError:
-            upper = None
-
-        if lower is None:
-            assert upper is not None
-            if has_diag:
-                return UpperTriQSM(diag=self.diag * other.diag, upper=upper)
-            else:
-                return upper
-
-        elif upper is None:
-            assert lower is not None
-            if has_diag:
-                return LowerTriQSM(diag=self.diag * other.diag, lower=lower)
-            else:
-                return lower
-
-        else:
-            if has_diag:
-                print(upper)
-                return SquareQSM(
-                    diag=self.diag * other.diag, lower=lower, upper=upper
-                )
-
-        return NotImplemented
-
     def __neg__(self) -> "SquareQSM":
         return SquareQSM(diag=-self.diag, lower=-self.lower, upper=-self.upper)
 
 
-@qsm
-class SymmQSM(NamedTuple):
-    diag: JAXArray
+@dataclass
+class SymmQSM(QSM):
+    diag: DiagQSM
     lower: StrictLowerTriQSM
 
     def transpose(self) -> "SymmQSM":
@@ -640,14 +581,14 @@ class SymmQSM(NamedTuple):
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
         return (
-            self.diag[:, None] * x
+            self.diag.matmul(x)
             + self.lower.matmul(x)
             + self.lower.transpose().matmul(x)
         )
 
     @jax.jit
     def inv(self) -> "SymmQSM":
-        d = self.diag
+        (d,) = self.diag
         p, q, a = self.lower
 
         def forward(carry, data):  # type: ignore
@@ -676,11 +617,13 @@ class SymmQSM(NamedTuple):
 
         init = jnp.zeros_like(jnp.outer(p[-1], p[-1]))
         lam, t = jax.lax.scan(backward, init, (ig, p, a, s), reverse=True)[1]
-        return SymmQSM(diag=lam, lower=StrictLowerTriQSM(p=t, q=s, a=ell))
+        return SymmQSM(
+            diag=DiagQSM(d=lam), lower=StrictLowerTriQSM(p=t, q=s, a=ell)
+        )
 
     @jax.jit
     def cholesky(self) -> LowerTriQSM:
-        d = self.diag
+        (d,) = self.diag
         p, q, a = self.lower
 
         def impl(carry, data):  # type: ignore
@@ -694,51 +637,14 @@ class SymmQSM(NamedTuple):
 
         init = jnp.zeros_like(jnp.outer(q[0], q[0]))
         _, (c, w) = jax.lax.scan(impl, init, (d, p, q, a))
-        return LowerTriQSM(diag=c, lower=StrictLowerTriQSM(p=p, q=w, a=a))
+        return LowerTriQSM(
+            diag=DiagQSM(c), lower=StrictLowerTriQSM(p=p, q=w, a=a)
+        )
 
     def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
         if hasattr(other, "is_qsm") and other.is_qsm:
             return NotImplemented
         return self.matmul(other)
-
-    def __add__(self, other: Any) -> Union["SymmQSM", "SquareQSM"]:
-        if isinstance(other, SymmQSM):
-            return SymmQSM(
-                diag=self.diag + other.diag, lower=self.lower + other.lower
-            )
-        return (
-            SquareQSM(
-                diag=self.diag, lower=self.lower, upper=self.lower.transpose()
-            )
-            + other
-        )
-
-    def __mul__(
-        self, other: Any
-    ) -> Union[
-        "SymmQSM",
-        "SquareQSM",
-        "LowerTriQSM",
-        "UpperTriQSM",
-        "StrictLowerTriQSM",
-        "StrictUpperTriQSM",
-    ]:
-        if not hasattr(other, "is_qsm"):
-            return SymmQSM(
-                diag=self.diag * other,
-                lower=self.lower * other,
-            )
-
-        if isinstance(other, SymmQSM):
-            return SymmQSM(
-                diag=self.diag * other.diag, lower=self.lower * other.lower
-            )
-        return (
-            SquareQSM(
-                diag=self.diag, lower=self.lower, upper=self.lower.transpose()
-            )
-            * other
-        )
 
     def __neg__(self) -> "SymmQSM":
         return SymmQSM(diag=-self.diag, lower=-self.lower)

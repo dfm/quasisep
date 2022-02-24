@@ -2,6 +2,7 @@
 
 __all__ = [
     "__version__",
+    "DiagQSM",
     "StrictLowerTriQSM",
     "StrictUpperTriQSM",
     "LowerTriQSM",
@@ -11,6 +12,7 @@ __all__ = [
 ]
 
 from quasisep.quasisep import (
+    DiagQSM,
     LowerTriQSM,
     SquareQSM,
     StrictLowerTriQSM,
