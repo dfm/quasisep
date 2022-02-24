@@ -356,10 +356,6 @@ def test_ops(some_nice_matrices):
             np.testing.assert_allclose(
                 (2.5 * m1).to_dense(), 2.5 * a, atol=1e-12
             )
-            factor = jnp.linspace(0.1, 0.5, m1.shape[0])
-            np.testing.assert_allclose(
-                (factor * m1).to_dense(), factor[:, None] * a, atol=1e-12
-            )
 
     for m1, m2 in combinations(
         [mat1, mat2, mat3, mat4, mat1.inv(), mat2.inv()], 2

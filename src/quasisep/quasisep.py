@@ -66,10 +66,12 @@ class QSM(metaclass=ABCMeta):
 
             return elementwise_mul(self, other)
         else:
+            assert jnp.ndim(other) <= 1
             return self.scale(other)
 
     def __rmul__(self, other: Any) -> Any:
         assert not isinstance(other, QSM)
+        assert jnp.ndim(other) <= 1
         return self.scale(other)
 
 
