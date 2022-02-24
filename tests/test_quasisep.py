@@ -353,9 +353,9 @@ def test_ops(some_nice_matrices):
             np.testing.assert_allclose((m1 + m2).to_dense(), a + b, atol=1e-12)
             np.testing.assert_allclose((m1 - m2).to_dense(), a - b, atol=1e-12)
             np.testing.assert_allclose((m1 * m2).to_dense(), a * b, atol=1e-12)
-            # np.testing.assert_allclose(
-            #     (2.5 * m1).to_dense(), 2.5 * a, atol=1e-12
-            # )
+            np.testing.assert_allclose(
+                (2.5 * m1).to_dense(), 2.5 * a, atol=1e-12
+            )
 
     for m1, m2 in combinations(
         [mat1, mat2, mat3, mat4, mat1.inv(), mat2.inv()], 2

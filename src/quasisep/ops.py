@@ -2,7 +2,7 @@
 
 __all__ = ["elementwise_add", "elementwise_mul"]
 
-from typing import Optional, Tuple, TypeVar, Union
+from typing import Optional, Tuple, TypeVar
 
 from quasisep.quasisep import (
     QSM,
@@ -15,20 +15,10 @@ from quasisep.quasisep import (
     UpperTriQSM,
 )
 
-AnyQSM = Union[
-    QSM,
-    SymmQSM,
-    SquareQSM,
-    LowerTriQSM,
-    UpperTriQSM,
-    StrictLowerTriQSM,
-    StrictUpperTriQSM,
-    DiagQSM,
-]
 F = TypeVar("F", DiagQSM, StrictLowerTriQSM, StrictUpperTriQSM)
 
 
-def elementwise_add(a: AnyQSM, b: AnyQSM) -> Optional[AnyQSM]:
+def elementwise_add(a: QSM, b: QSM) -> Optional[QSM]:
     diag_a, lower_a, upper_a = deconstruct(a)
     diag_b, lower_b, upper_b = deconstruct(b)
 
@@ -41,7 +31,7 @@ def elementwise_add(a: AnyQSM, b: AnyQSM) -> Optional[AnyQSM]:
     return construct(diag, lower, upper, is_symm_a and is_symm_b)
 
 
-def elementwise_mul(a: AnyQSM, b: AnyQSM) -> Optional[AnyQSM]:
+def elementwise_mul(a: QSM, b: QSM) -> Optional[QSM]:
     diag_a, lower_a, upper_a = deconstruct(a)
     diag_b, lower_b, upper_b = deconstruct(b)
 
@@ -55,7 +45,7 @@ def elementwise_mul(a: AnyQSM, b: AnyQSM) -> Optional[AnyQSM]:
 
 
 def deconstruct(
-    a: AnyQSM,
+    a: QSM,
 ) -> Tuple[
     Optional[DiagQSM], Optional[StrictLowerTriQSM], Optional[StrictUpperTriQSM]
 ]:
@@ -78,7 +68,7 @@ def construct(
     lower: Optional[StrictLowerTriQSM],
     upper: Optional[StrictUpperTriQSM],
     symm: bool,
-) -> Optional[AnyQSM]:
+) -> Optional[QSM]:
     if lower is None and upper is None:
         return diag
 

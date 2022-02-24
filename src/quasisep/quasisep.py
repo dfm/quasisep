@@ -33,6 +33,10 @@ class QSM(metaclass=ABCMeta):
     def matmul(self, x: JAXArray) -> JAXArray:
         pass
 
+    @abstractmethod
+    def scale(self, other: JAXArray) -> JAXArray:
+        pass
+
     @property
     def T(self) -> Any:
         return self.transpose()
@@ -57,9 +61,16 @@ class QSM(metaclass=ABCMeta):
         return elementwise_add(self, other)
 
     def __mul__(self, other: Any) -> Any:
-        from quasisep.ops import elementwise_mul
+        if isinstance(other, QSM):
+            from quasisep.ops import elementwise_mul
 
-        return elementwise_mul(self, other)
+            return elementwise_mul(self, other)
+        else:
+            return self.scale(other)
+
+    def __rmul__(self, other: Any) -> Any:
+        assert not isinstance(other, QSM)
+        return self.scale(other)
 
 
 @dataclass
@@ -77,6 +88,9 @@ class DiagQSM(QSM):
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
         return self.d[:, None] * x
+
+    def scale(self, other: JAXArray) -> "DiagQSM":
+        return DiagQSM(d=self.d * other)
 
     def self_add(self, other: "DiagQSM") -> "DiagQSM":
         return DiagQSM(d=self.d + other.d)
@@ -116,6 +130,9 @@ class StrictLowerTriQSM(QSM):
         init = jnp.zeros_like(jnp.outer(self.q[0], x[0]))
         _, f = jax.lax.scan(impl, init, (self.q, self.a, x))
         return jax.vmap(jnp.dot)(self.p, f)
+
+    def scale(self, other: JAXArray) -> "StrictLowerTriQSM":
+        return StrictLowerTriQSM(p=self.p * other, q=self.q, a=self.a)
 
     def self_add(self, other: "StrictLowerTriQSM") -> "StrictLowerTriQSM":
         @jax.vmap
@@ -178,6 +195,9 @@ class StrictUpperTriQSM(QSM):
         _, f = jax.lax.scan(impl, init, (self.p, self.a, x), reverse=True)
         return jax.vmap(jnp.dot)(self.q, f)
 
+    def scale(self, other: JAXArray) -> "StrictUpperTriQSM":
+        return StrictUpperTriQSM(p=self.p, q=self.q * other, a=self.a)
+
     def self_add(self, other: "StrictUpperTriQSM") -> "StrictUpperTriQSM":
         return self.transpose().self_add(other.transpose()).transpose()
 
@@ -214,6 +234,11 @@ class LowerTriQSM(QSM):
     @jax.jit
     def matmul(self, x: JAXArray) -> JAXArray:
         return self.diag.matmul(x) + self.lower.matmul(x)
+
+    def scale(self, other: JAXArray) -> "LowerTriQSM":
+        return LowerTriQSM(
+            diag=self.diag.scale(other), lower=self.lower.scale(other)
+        )
 
     @jax.jit
     def inv(self) -> "LowerTriQSM":
@@ -309,6 +334,11 @@ class UpperTriQSM(QSM):
     def matmul(self, x: JAXArray) -> JAXArray:
         return self.diag.matmul(x) + self.upper.matmul(x)
 
+    def scale(self, other: JAXArray) -> "UpperTriQSM":
+        return UpperTriQSM(
+            diag=self.diag.scale(other), upper=self.upper.scale(other)
+        )
+
     @jax.jit
     def inv(self) -> "UpperTriQSM":
         return self.transpose().inv().transpose()
@@ -400,6 +430,13 @@ class SquareQSM(QSM):
     def matmul(self, x: JAXArray) -> JAXArray:
         return (
             self.diag.matmul(x) + self.lower.matmul(x) + self.upper.matmul(x)
+        )
+
+    def scale(self, other: JAXArray) -> "SquareQSM":
+        return SquareQSM(
+            diag=self.diag.scale(other),
+            lower=self.lower.scale(other),
+            upper=self.upper.scale(other),
         )
 
     @jax.jit
@@ -584,6 +621,11 @@ class SymmQSM(QSM):
             self.diag.matmul(x)
             + self.lower.matmul(x)
             + self.lower.transpose().matmul(x)
+        )
+
+    def scale(self, other: JAXArray) -> "SymmQSM":
+        return SymmQSM(
+            diag=self.diag.scale(other), lower=self.lower.scale(other)
         )
 
     @jax.jit
