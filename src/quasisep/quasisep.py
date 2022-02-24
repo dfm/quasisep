@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 __all__ = [
+    "DiagQSM",
     "StrictLowerTriQSM",
     "StrictUpperTriQSM",
     "LowerTriQSM",
@@ -21,6 +22,10 @@ from quasisep.helpers import JAXArray, dataclass, handle_matvec_shapes
 
 
 class QSM(metaclass=ABCMeta):
+
+    # Must be higher than jax's
+    __array_priority__ = 2000
+
     def __init__(self, *args, **kwargs) -> None:  # type: ignore
         # Stub for mypy
         raise NotImplementedError
@@ -74,6 +79,18 @@ class QSM(metaclass=ABCMeta):
         assert jnp.ndim(other) <= 1
         return self.scale(other)
 
+    def __matmul__(self, other: Any) -> Any:
+        if isinstance(other, QSM):
+            from quasisep.ops import qsm_mul
+
+            return qsm_mul(self, other)
+        else:
+            return self.matmul(other)
+
+    def __rmatmul__(self, other: Any) -> Any:
+        assert not isinstance(other, QSM)
+        return (self.transpose() @ other.transpose()).transpose()
+
 
 @dataclass
 class DiagQSM(QSM):
@@ -102,11 +119,6 @@ class DiagQSM(QSM):
 
     def __neg__(self) -> "DiagQSM":
         return DiagQSM(d=-self.d)
-
-    def __matmul__(self, other: Any) -> JAXArray:
-        if hasattr(other, "is_qsm") and other.is_qsm:
-            return NotImplemented
-        return self.matmul(other)
 
 
 @dataclass
@@ -164,11 +176,6 @@ class StrictLowerTriQSM(QSM):
             * other.a[:, j[:, None], j[None, :]],
         )
 
-    def __matmul__(self, other: Any) -> JAXArray:
-        if hasattr(other, "is_qsm") and other.is_qsm:
-            return NotImplemented
-        return self.matmul(other)
-
     def __neg__(self) -> "StrictLowerTriQSM":
         return StrictLowerTriQSM(p=-self.p, q=self.q, a=self.a)
 
@@ -205,11 +212,6 @@ class StrictUpperTriQSM(QSM):
 
     def self_mul(self, other: "StrictUpperTriQSM") -> "StrictUpperTriQSM":
         return self.transpose().self_mul(other.transpose()).transpose()
-
-    def __matmul__(self, other: Any) -> JAXArray:
-        if hasattr(other, "is_qsm"):
-            return NotImplemented
-        return self.matmul(other)
 
     def __add__(self, other: Any) -> "StrictUpperTriQSM":
         return (self.transpose() + other.transpose()).transpose()
@@ -266,60 +268,6 @@ class LowerTriQSM(QSM):
         _, x = jax.lax.scan(impl, init, (self, y))
         return x
 
-    @jax.jit
-    def qsmul(self, other: "SquareQSM") -> "SquareQSM":
-        def calc_phi(phi, data):  # type: ignore
-            a, b, q, g = data
-            return a @ phi @ b.T + jnp.outer(q, g), phi
-
-        init = jnp.zeros_like(jnp.outer(self.lower.q[0], other.upper.p[0]))
-        args = (self.lower.a, other.upper.a, self.lower.q, other.upper.q)
-        _, phi = jax.lax.scan(calc_phi, init, args)
-
-        @jax.vmap
-        def impl(self, other, phi) -> SquareQSM:  # type: ignore
-            # Note: the order of g and h is flipped vs the paper!
-            (d1,) = self.diag
-            p1, q1, a1 = self.lower
-
-            (d2,) = other.diag
-            p2, q2, a2 = other.lower
-            h2, g2, b2 = other.upper
-
-            alpha = a1 @ phi @ h2 + q1 * d2
-            theta = p1 @ phi @ b2.T + d1 * g2
-            beta = d1 * p2
-
-            s = jnp.concatenate((alpha, q2))
-            v = theta
-            t = jnp.concatenate((p1, beta))
-            u = h2
-            lam = p1 @ phi @ h2 + d1 * d2
-            ell = jnp.concatenate(
-                (
-                    jnp.concatenate((a1, jnp.outer(q1, p2)), axis=-1),
-                    jnp.concatenate(
-                        (jnp.zeros((a2.shape[0], a1.shape[0])), a2), axis=-1
-                    ),
-                ),
-                axis=0,
-            )
-            delta = b2
-            return SquareQSM(
-                diag=DiagQSM(d=lam),
-                lower=StrictLowerTriQSM(p=t, q=s, a=ell),
-                upper=StrictUpperTriQSM(p=u, q=v, a=delta),
-            )
-
-        return impl(self, other, phi)
-
-    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
-        if isinstance(other, SquareQSM):
-            return self.qsmul(other)
-        elif hasattr(other, "is_qsm") and other.is_qsm:
-            return NotImplemented
-        return self.matmul(other)
-
     def __neg__(self) -> "LowerTriQSM":
         return LowerTriQSM(diag=-self.diag, lower=-self.lower)
 
@@ -357,60 +305,6 @@ class UpperTriQSM(QSM):
         _, x = jax.lax.scan(impl, init, (self, y), reverse=True)
         return x
 
-    @jax.jit
-    def qsmul(self, other: "SquareQSM") -> "SquareQSM":
-        def calc_psi(psi, data):  # type: ignore
-            a, b, q, g = data
-            return a.T @ psi @ b + jnp.outer(q, g), psi
-
-        init = jnp.zeros_like(jnp.outer(self.upper.q[-1], other.lower.p[-1]))
-        args = (self.upper.a, other.lower.a, self.upper.p, other.lower.p)
-        _, psi = jax.lax.scan(calc_psi, init, args, reverse=True)
-
-        @jax.vmap
-        def impl(self, other, psi) -> SquareQSM:  # type: ignore
-            # Note: the order of g and h is flipped vs the paper!
-            (d1,) = self.diag
-            h1, g1, b1 = self.upper
-
-            (d2,) = other.diag
-            p2, q2, a2 = other.lower
-            h2, g2, b2 = other.upper
-
-            theta = d1 * g2
-            beta = d1 * p2 + g1 @ psi @ a2
-            eta = h1 * d2 + b1.T @ psi @ q2
-
-            s = q2
-            v = jnp.concatenate((g1, theta))
-            t = beta
-            u = jnp.concatenate((eta, h2))
-            lam = d1 * d2 + g1 @ psi @ q2
-            ell = a2
-            delta = jnp.concatenate(
-                (
-                    jnp.concatenate(
-                        (b1, jnp.zeros((b1.shape[0], b2.shape[0]))), axis=-1
-                    ),
-                    jnp.concatenate((jnp.outer(g2, h1), b2), axis=-1),
-                ),
-                axis=0,
-            )
-            return SquareQSM(
-                diag=DiagQSM(d=lam),
-                lower=StrictLowerTriQSM(p=t, q=s, a=ell),
-                upper=StrictUpperTriQSM(p=u, q=v, a=delta),
-            )
-
-        return impl(self, other, psi)
-
-    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
-        if isinstance(other, SquareQSM):
-            return self.qsmul(other)
-        elif hasattr(other, "is_qsm"):
-            return NotImplemented
-        return self.matmul(other)
-
     def __neg__(self) -> "UpperTriQSM":
         return UpperTriQSM(diag=-self.diag, upper=-self.upper)
 
@@ -442,115 +336,8 @@ class SquareQSM(QSM):
         )
 
     @jax.jit
-    def qsmul(self, other: "SquareQSM") -> "SquareQSM":
-        def calc_phi(phi, data):  # type: ignore
-            a, b, q, g = data
-            return a @ phi @ b.T + jnp.outer(q, g), phi
-
-        def calc_psi(psi, data):  # type: ignore
-            a, b, q, g = data
-            return a.T @ psi @ b + jnp.outer(q, g), psi
-
-        init = jnp.zeros_like(jnp.outer(self.lower.q[0], other.upper.p[0]))
-        args = (self.lower.a, other.upper.a, self.lower.q, other.upper.q)
-        _, phi = jax.lax.scan(calc_phi, init, args)
-
-        init = jnp.zeros_like(jnp.outer(self.upper.q[-1], other.lower.p[-1]))
-        args = (self.upper.a, other.lower.a, self.upper.p, other.lower.p)
-        _, psi = jax.lax.scan(calc_psi, init, args, reverse=True)
-
-        @jax.vmap
-        def impl(self, other, phi, psi) -> SquareQSM:  # type: ignore
-            # Note: the order of g and h is flipped vs the paper!
-            (d1,) = self.diag
-            p1, q1, a1 = self.lower
-            h1, g1, b1 = self.upper
-
-            (d2,) = other.diag
-            p2, q2, a2 = other.lower
-            h2, g2, b2 = other.upper
-
-            alpha = a1 @ phi @ h2 + q1 * d2
-            theta = p1 @ phi @ b2.T + d1 * g2
-            beta = d1 * p2 + g1 @ psi @ a2
-            eta = h1 * d2 + b1.T @ psi @ q2
-
-            s = jnp.concatenate((alpha, q2))
-            v = jnp.concatenate((g1, theta))
-            t = jnp.concatenate((p1, beta))
-            u = jnp.concatenate((eta, h2))
-            lam = p1 @ phi @ h2 + d1 * d2 + g1 @ psi @ q2
-            ell = jnp.concatenate(
-                (
-                    jnp.concatenate((a1, jnp.outer(q1, p2)), axis=-1),
-                    jnp.concatenate(
-                        (jnp.zeros((a2.shape[0], a1.shape[0])), a2), axis=-1
-                    ),
-                ),
-                axis=0,
-            )
-            delta = jnp.concatenate(
-                (
-                    jnp.concatenate(
-                        (b1, jnp.zeros((b1.shape[0], b2.shape[0]))), axis=-1
-                    ),
-                    jnp.concatenate((jnp.outer(g2, h1), b2), axis=-1),
-                ),
-                axis=0,
-            )
-            return SquareQSM(
-                diag=DiagQSM(lam),
-                lower=StrictLowerTriQSM(p=t, q=s, a=ell),
-                upper=StrictUpperTriQSM(p=u, q=v, a=delta),
-            )
-
-        return impl(self, other, phi, psi)
-
-    @jax.jit
-    def gram(self) -> "SymmQSM":
-        def calc_phi(phi, data):  # type: ignore
-            a, q = data
-            return a @ phi @ a.T + jnp.outer(q, q), phi
-
-        def calc_psi(psi, data):  # type: ignore
-            a, p = data
-            return a.T @ psi @ a + jnp.outer(p, p), psi
-
-        init = jnp.zeros_like(jnp.outer(self.upper.p[0], self.upper.p[0]))
-        args = (self.upper.a, self.upper.q)
-        _, phi = jax.lax.scan(calc_phi, init, args)
-
-        init = jnp.zeros_like(jnp.outer(self.lower.p[-1], self.lower.p[-1]))
-        args = (self.lower.a, self.lower.p)
-        _, psi = jax.lax.scan(calc_psi, init, args, reverse=True)
-
-        @jax.vmap
-        def impl(self, phi, psi) -> SymmQSM:  # type: ignore
-            # Note: the order of g and h is flipped vs the paper!
-            (d,) = self.diag
-            p, q, a = self.lower
-            h, g, b = self.upper
-
-            alpha = b @ phi @ h + g * d
-            beta = d * p + q @ psi @ a
-
-            s = jnp.concatenate((alpha, q))
-            t = jnp.concatenate((h, beta))
-            lam = h @ phi @ h + jnp.square(d) + q @ psi @ q
-            ell = jnp.concatenate(
-                (
-                    jnp.concatenate((b, jnp.outer(g, p)), axis=-1),
-                    jnp.concatenate(
-                        (jnp.zeros((a.shape[0], b.shape[0])), a), axis=-1
-                    ),
-                ),
-                axis=0,
-            )
-            return SymmQSM(
-                diag=DiagQSM(d=lam), lower=StrictLowerTriQSM(p=t, q=s, a=ell)
-            )
-
-        return impl(self, phi, psi)
+    def gram(self) -> "QSM":
+        return self.transpose() @ self
 
     @jax.jit
     def inv(self) -> "SquareQSM":
@@ -597,13 +384,6 @@ class SquareQSM(QSM):
             lower=StrictLowerTriQSM(p=t, q=s, a=ell),
             upper=StrictUpperTriQSM(p=u, q=v, a=del_),
         )
-
-    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
-        if isinstance(other, SquareQSM):
-            return self.qsmul(other)
-        elif hasattr(other, "is_qsm"):
-            return NotImplemented
-        return self.matmul(other)
 
     def __neg__(self) -> "SquareQSM":
         return SquareQSM(diag=-self.diag, lower=-self.lower, upper=-self.upper)
@@ -685,10 +465,10 @@ class SymmQSM(QSM):
             diag=DiagQSM(c), lower=StrictLowerTriQSM(p=p, q=w, a=a)
         )
 
-    def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
-        if hasattr(other, "is_qsm") and other.is_qsm:
-            return NotImplemented
-        return self.matmul(other)
+    # def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
+    #     if hasattr(other, "is_qsm") and other.is_qsm:
+    #         return NotImplemented
+    #     return self.matmul(other)
 
     def __neg__(self) -> "SymmQSM":
         return SymmQSM(diag=-self.diag, lower=-self.lower)

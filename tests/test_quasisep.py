@@ -177,8 +177,10 @@ def test_square_matmul(symm, matrices):
     np.testing.assert_allclose(np.diag(dense), diag)
 
     # Test matmuls
-    np.testing.assert_allclose(mat.matmul(v), dense @ v)
-    np.testing.assert_allclose(mat.matmul(m), dense @ m)
+    np.testing.assert_allclose(mat @ v, dense @ v)
+    np.testing.assert_allclose(mat @ m, dense @ m)
+    np.testing.assert_allclose(v.T @ mat, v.T @ dense)
+    np.testing.assert_allclose(m.T @ mat, m.T @ dense)
 
 
 @pytest.mark.parametrize("name", ["celerite"])
