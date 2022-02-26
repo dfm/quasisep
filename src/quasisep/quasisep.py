@@ -11,14 +11,32 @@ __all__ = [
 ]
 
 from abc import ABCMeta, abstractmethod
-from typing import Any, Tuple, Union
+from functools import wraps
+from typing import Any, Callable, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.linalg import block_diag
 
-from quasisep.helpers import JAXArray, dataclass, handle_matvec_shapes
+from quasisep.helpers import JAXArray, dataclass
+
+
+def handle_matvec_shapes(
+    func: Callable[[Any, JAXArray], JAXArray]
+) -> Callable[[Any, JAXArray], JAXArray]:
+    @wraps(func)
+    def wrapped(self: Any, x: JAXArray) -> JAXArray:
+        vector = False
+        if jnp.ndim(x) == 1:
+            vector = True
+            x = x[:, None]
+        result = func(self, x)
+        if vector:
+            return result[:, 0]
+        return result
+
+    return wrapped
 
 
 class QSM(metaclass=ABCMeta):
@@ -26,7 +44,7 @@ class QSM(metaclass=ABCMeta):
     # Must be higher than jax's
     __array_priority__ = 2000
 
-    def __init__(self, *args, **kwargs) -> None:  # type: ignore
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         # Stub for mypy
         raise NotImplementedError
 
@@ -57,14 +75,17 @@ class QSM(metaclass=ABCMeta):
     def __iter__(self):  # type: ignore
         return self.iter_elems()  # type: ignore
 
+    @jax.jit
     def __sub__(self, other: Any) -> Any:
         return self.__add__(-other)
 
+    @jax.jit
     def __add__(self, other: Any) -> Any:
         from quasisep.ops import elementwise_add
 
         return elementwise_add(self, other)
 
+    @jax.jit
     def __mul__(self, other: Any) -> Any:
         if isinstance(other, QSM):
             from quasisep.ops import elementwise_mul
@@ -74,11 +95,13 @@ class QSM(metaclass=ABCMeta):
             assert jnp.ndim(other) <= 1
             return self.scale(other)
 
+    @jax.jit
     def __rmul__(self, other: Any) -> Any:
         assert not isinstance(other, QSM)
         assert jnp.ndim(other) <= 1
         return self.scale(other)
 
+    @jax.jit
     def __matmul__(self, other: Any) -> Any:
         if isinstance(other, QSM):
             from quasisep.ops import qsm_mul
@@ -87,6 +110,7 @@ class QSM(metaclass=ABCMeta):
         else:
             return self.matmul(other)
 
+    @jax.jit
     def __rmatmul__(self, other: Any) -> Any:
         assert not isinstance(other, QSM)
         return (self.transpose() @ other.transpose()).transpose()
@@ -104,7 +128,7 @@ class DiagQSM(QSM):
     def transpose(self) -> "DiagQSM":
         return self
 
-    @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
         return self.d[:, None] * x
 
@@ -136,6 +160,7 @@ class StrictLowerTriQSM(QSM):
         return StrictUpperTriQSM(p=self.p, q=self.q, a=self.a)
 
     @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
         def impl(f, data):  # type: ignore
             q, a, x = data
@@ -195,6 +220,7 @@ class StrictUpperTriQSM(QSM):
         return StrictLowerTriQSM(p=self.p, q=self.q, a=self.a)
 
     @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
         def impl(f, data):  # type: ignore
             p, a, x = data
@@ -213,16 +239,6 @@ class StrictUpperTriQSM(QSM):
     def self_mul(self, other: "StrictUpperTriQSM") -> "StrictUpperTriQSM":
         return self.transpose().self_mul(other.transpose()).transpose()
 
-    def __add__(self, other: Any) -> "StrictUpperTriQSM":
-        return (self.transpose() + other.transpose()).transpose()
-
-    def __mul__(self, other: Any) -> "StrictUpperTriQSM":
-        try:
-            other = other.tranpose()
-        except AttributeError:
-            pass
-        return (self.transpose() * other).transpose()
-
     def __neg__(self) -> "StrictUpperTriQSM":
         return StrictUpperTriQSM(p=-self.p, q=self.q, a=self.a)
 
@@ -235,7 +251,7 @@ class LowerTriQSM(QSM):
     def transpose(self) -> "UpperTriQSM":
         return UpperTriQSM(diag=self.diag, upper=self.lower.transpose())
 
-    @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
         return self.diag.matmul(x) + self.lower.matmul(x)
 
@@ -244,7 +260,6 @@ class LowerTriQSM(QSM):
             diag=self.diag.scale(other), lower=self.lower.scale(other)
         )
 
-    @jax.jit
     def inv(self) -> "LowerTriQSM":
         (d,) = self.diag
         p, q, a = self.lower
@@ -280,7 +295,7 @@ class UpperTriQSM(QSM):
     def transpose(self) -> "LowerTriQSM":
         return LowerTriQSM(diag=self.diag, lower=self.upper.transpose())
 
-    @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
         return self.diag.matmul(x) + self.upper.matmul(x)
 
@@ -289,7 +304,6 @@ class UpperTriQSM(QSM):
             diag=self.diag.scale(other), upper=self.upper.scale(other)
         )
 
-    @jax.jit
     def inv(self) -> "UpperTriQSM":
         return self.transpose().inv().transpose()
 
@@ -322,7 +336,7 @@ class SquareQSM(QSM):
             upper=self.lower.transpose(),
         )
 
-    @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
         return (
             self.diag.matmul(x) + self.lower.matmul(x) + self.upper.matmul(x)
@@ -335,7 +349,6 @@ class SquareQSM(QSM):
             upper=self.upper.scale(other),
         )
 
-    @jax.jit
     def gram(self) -> "QSM":
         return self.transpose() @ self
 
@@ -397,7 +410,7 @@ class SymmQSM(QSM):
     def transpose(self) -> "SymmQSM":
         return self
 
-    @jax.jit
+    @handle_matvec_shapes
     def matmul(self, x: JAXArray) -> JAXArray:
         return (
             self.diag.matmul(x)
@@ -464,11 +477,6 @@ class SymmQSM(QSM):
         return LowerTriQSM(
             diag=DiagQSM(c), lower=StrictLowerTriQSM(p=p, q=w, a=a)
         )
-
-    # def __matmul__(self, other: Any) -> Union[JAXArray, "SquareQSM"]:
-    #     if hasattr(other, "is_qsm") and other.is_qsm:
-    #         return NotImplemented
-    #     return self.matmul(other)
 
     def __neg__(self) -> "SymmQSM":
         return SymmQSM(diag=-self.diag, lower=-self.lower)

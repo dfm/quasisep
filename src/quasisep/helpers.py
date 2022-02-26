@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
 # mypy: ignore-errors
 
-__all__ = ["handle_matvec_shapes", "qsm", "JAXArray"]
+__all__ = ["qsm", "JAXArray"]
 
 import dataclasses
-from functools import wraps
 from typing import Any, Callable, Tuple, TypeVar, Union
 
 import jax
-import jax.numpy as jnp
 
 JAXArray = Any
 
@@ -68,9 +66,6 @@ def dataclass(clz: _T) -> _T:
         data_clz, iterate_clz, clz_from_iterable
     )
 
-    # Handle 1- or 2-D shapes in matrix multiply
-    data_clz.matmul = handle_matvec_shapes(data_clz.matmul)
-
     # Hack to make this class act as a tuple when unpacked
     data_clz.iter_elems = lambda self: iterate_clz(self)[0].__iter__()
 
@@ -79,18 +74,3 @@ def dataclass(clz: _T) -> _T:
 
 def field(pytree_node=True, **kwargs):
     return dataclasses.field(metadata={"pytree_node": pytree_node}, **kwargs)
-
-
-def handle_matvec_shapes(func):
-    @wraps(func)
-    def wrapped(self, x, *args, **kwargs):
-        vector = False
-        if jnp.ndim(x) == 1:
-            vector = True
-            x = x[:, None]
-        result = func(self, x, *args, **kwargs)
-        if vector:
-            return result[:, 0]
-        return result
-
-    return wrapped

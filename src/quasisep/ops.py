@@ -6,8 +6,8 @@ from typing import Optional, Tuple, TypeVar
 
 import jax
 import jax.numpy as jnp
-from quasisep.helpers import JAXArray
 
+from quasisep.helpers import JAXArray
 from quasisep.quasisep import (
     QSM,
     DiagQSM,
@@ -46,7 +46,6 @@ def elementwise_mul(a: QSM, b: QSM) -> Optional[QSM]:
     return construct(diag, lower, upper, is_symm_a and is_symm_b)
 
 
-@jax.jit
 def qsm_mul(a: QSM, b: QSM) -> Optional[QSM]:
     diag_a, lower_a, upper_a = deconstruct(a)
     diag_b, lower_b, upper_b = deconstruct(b)
@@ -126,24 +125,14 @@ def qsm_mul(a: QSM, b: QSM) -> Optional[QSM]:
             lam = diag_a.d * diag_b.d
 
         if lower_a is not None and phi is not None and upper_b is not None:
-            dalpha = lower_a.a @ phi @ upper_b.p
-            alpha = dalpha if alpha is None else alpha + dalpha
-
-            dtheta = lower_a.p @ phi @ upper_b.a.T
-            theta = dtheta if theta is None else theta + dtheta
-
-            dlam = lower_a.p @ phi @ upper_b.p
-            lam = dlam if lam is None else lam + dlam
+            alpha = none_safe_add(alpha, lower_a.a @ phi @ upper_b.p)
+            theta = none_safe_add(theta, lower_a.p @ phi @ upper_b.a.T)
+            lam = none_safe_add(lam, lower_a.p @ phi @ upper_b.p)
 
         if upper_a is not None and psi is not None and lower_b is not None:
-            dbeta = upper_a.q @ psi @ lower_b.a
-            beta = dbeta if beta is None else beta + dbeta
-
-            deta = upper_a.a.T @ psi @ lower_b.q
-            eta = deta if eta is None else eta + deta
-
-            dlam = upper_a.q @ psi @ lower_b.q
-            lam = dlam if lam is None else lam + dlam
+            beta = none_safe_add(beta, upper_a.q @ psi @ lower_b.a)
+            eta = none_safe_add(eta, upper_a.a.T @ psi @ lower_b.q)
+            lam = none_safe_add(lam, upper_a.q @ psi @ lower_b.q)
 
         s = [alpha] if alpha is not None else []
         s += [lower_b.q] if lower_b is not None else []
@@ -309,3 +298,11 @@ def mul_two(a: Optional[F], b: Optional[F]) -> Optional[F]:
     if a is None or b is None:
         return None
     return a.self_mul(b)
+
+
+def none_safe_add(
+    a: Optional[JAXArray], b: Optional[JAXArray]
+) -> Optional[JAXArray]:
+    if a is not None and b is not None:
+        return a + b
+    return a if a is not None else b
